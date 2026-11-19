@@ -1,0 +1,48 @@
+# pgadmin-schemadiff 設定ファイルサンプル
+
+[pgadmin]
+# pgAdmin 4 のインストールディレクトリ
+# (Windows で PostgreSQL 17 付属の pgAdmin 4 を使う場合の例)
+install_path = "C:\\Program Files\\PostgreSQL\\17\\pgAdmin 4"
+# pgAdmin 4 ワーカーのタイムアウト秒数 (省略時: 300)
+timeout_seconds = 300
+
+[ignore]
+# pgAdmin 4 の Schema Diff 比較オプション相当
+owner = false       # Owner の違いを無視する (Ignore Owner)
+whitespace = false  # 空白・改行の違いを無視する (Ignore Whitespace)
+tablespace = false  # Tablespace の違いを無視する (Ignore Tablespace)
+grants = false      # GRANT/REVOKE の違いを無視する (Ignore Grant/Revoke)
+
+[filter]
+# pgAdmin 4 の Schema Diff 出力フィルタ相当
+# 本ツールでは Old を New に合わせるため、内部的に Source=New / Target=Old として比較します。
+source_only = true  # New のみに存在するオブジェクト (CREATE 等)
+target_only = true  # Old のみに存在するオブジェクト (DROP 等)
+different = true    # Old と New で定義が異なるオブジェクト (ALTER 等)
+same = false        # 同一オブジェクト (--format json の items に含めるか。SQL 差分自体は生成されません)
+
+[databases.old]
+# Old 側 DDL を展開する PostgreSQL 接続先
+# 注意: search_path で指定された先頭スキーマ内のリソースは DDL 実行前にすべて DROP されます。
+host = "localhost"
+port = 5432
+database = "schemadiff_old"
+user = "postgres"
+password = "your_password"
+# password の代わりに環境変数から読み込む場合:
+# password_env = "PG_OLD_PASSWORD"
+search_path = "public"
+sslmode = "prefer"
+
+[databases.new]
+# New 側 DDL を展開する PostgreSQL 接続先
+# 注意: search_path で指定された先頭スキーマ内のリソースは DDL 実行前にすべて DROP されます。
+host = "localhost"
+port = 5432
+database = "schemadiff_new"
+user = "postgres"
+password = "your_password"
+# password_env = "PG_NEW_PASSWORD"
+search_path = "public"
+sslmode = "prefer"

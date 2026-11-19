@@ -1,0 +1,136 @@
+# pgadmin-schemadiff-cli
+
+pgAdmin 4 に付属する **Schema Diff エンジン** をヘッドレスで呼び出し、2 つの DDL セット（Old / New）から PostgreSQL 上にスキーマを構築して差分解消用の移行 SQL（Old → New）を出力する Python 3.13 製 CLI ツールおよびライブラリです。
+
+## 特徴と仕組み
+
+- **pgAdmin 4 Schema Diff 完全互換**: 他の差分ツールは使用せず、インストール済みの pgAdmin 4 内部モジュール（`pgadmin.tools.schema_diff` および各オブジェクトの `SchemaDiffRegistry`）をそのまま利用します。
+- **読み取り専用・隔離実行**: pgAdmin 4 のインストールディレクトリは一切変更しません。実行時は一時ディレクトリに独立した `config_distro.py` と一時 SQLite 設定 DB を作成し、終了後に自動削除します。
+- **柔軟な DDL 入力**: 単一の `.sql` ファイル、ディレクトリ（直下の `.sql` のみをアルファベット昇順に実行・非再帰）、`.zip` アーカイブ（一時展開後にディレクトリ渡しと同様に実行）に対応しています。
+- **実行前の自動クリーンアップ**: DDL を適用する前に、設定ファイルの `search_path` に指定された対象スキーマ内のリソース（テーブル、パーティションテーブル、インデックス、制約、トリガー、ビュー、マテリアライズドビュー、外部テーブル、シーケンス、関数、プロシージャ、集約関数、ドメイン、型、全文検索オブジェクト、照合順序、拡張統計、演算子、拡張機能）をすべて `DROP ... CASCADE` します。
+
+> [!NOTE]
+> PyPI 上の `pgadmin4` パッケージは Web アプリケーション本体であり、Schema Diff 単体のライブラリとしては提供されていません。そのため本ツールでは設定ファイルに pgAdmin 4 のインストールパス（`pgadmin.install_path`）を指定して、同梱の Python ランタイムおよびモジュールを利用する方式を採用しています。
+
+## 前提条件
+
+- **Python 3.13**
+- **uv**（`mise` 等で管理）
+- **pgAdmin 4**（例: `C:\Program Files\PostgreSQL\17\pgAdmin 4`）
+- **PostgreSQL サーバー（2 DB または 2 スキーマ）**
+  - pgAdmin 4 Schema Diff の仕様上、Old と New の接続先 PostgreSQL は**同じメジャーバージョン**である必要があります。
+  - 設定したデータベース・スキーマは実行のたびにリセット（`DROP`）されるため、必ず差分検証用の専用 DB / スキーマを指定してください。
+
+## セットアップ
+
+```powershell
+# 依存パッケージおよび開発ツール (pytest, pytest-cov) のインストール
+uv sync
+```
+
+`uv` が `mise` 経由でインストールされており PATH に見つからない場合:
+
+```powershell
+mise exec -- uv sync
+```
+
+## 設定ファイル (`config.toml`)
+
+サンプルとして [`config.example.toml`](config.example.toml) を同梱しています。
+
+### `[pgadmin]`
+
+| キー | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- |
+| `install_path` (別名: `path`) | 必須 | - | pgAdmin 4 のインストールルートパス（`web/pgAdmin4.py` と同梱 Python が含まれる場所） |
+| `timeout_seconds` | 任意 | `300` | pgAdmin 4 サブプロセスのタイムアウト秒数 |
+
+### `[ignore]`（比較時の無視設定）
+
+pgAdmin 4 の Compare ボタン横のメニューに対応します。
+
+| キー | デフォルト | 説明 |
+| --- | --- | --- |
+| `owner` | `false` | 所有者（Owner）の違いを無視する |
+| `whitespace` (別名: `whitespaces`) | `false` | 空白・タブ・改行の違いを無視する |
+| `tablespace` | `false` | テーブルスペースの違いを無視する |
+| `grants` | `false` | 権限（`GRANT` / `REVOKE`）の違いを無視する |
+
+### `[filter]`（別名: `[output_filter]`、出力フィルタ設定）
+
+pgAdmin 4 の Filter メニューに対応します。pgAdmin 4 の Schema Diff は「Target を Source に合わせる SQL」を生成するため、本ツールでは **Source = New**、**Target = Old** として比較します。
+
+| キー | デフォルト | 説明 |
+| --- | --- | --- |
+| `source_only` | `true` | New 側にのみ存在するオブジェクト（`CREATE` 系）を含める |
+| `target_only` | `true` | Old 側にのみ存在するオブジェクト（`DROP` 系）を含める |
+| `different` | `true` | 定義が異なるオブジェクト（`ALTER` / 再作成系）を含める |
+| `same` (別名: `identical`) | `false` | 同一のオブジェクトを結果リスト（`--format json` / Python API の `items`）に含める（※SQL 出力には変更クエリが無いため出力されません） |
+
+### `[databases.old]` / `[databases.new]`（接続先 DB 設定）
+
+| キー | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- |
+| `host` | 必須 | - | PostgreSQL ホスト名 |
+| `port` | 任意 | `5432` | ポート番号 |
+| `database` (別名: `dbname`) | 任意 | `"postgres"` | データベース名 |
+| `user` (別名: `username`) | 必須 | - | 接続ユーザー名 |
+| `password` | 任意 | `""` | パスワード（`password_env` と排他） |
+| `password_env` | 任意 | - | パスワードを取得する環境変数名（`password` と排他） |
+| `search_path` | 任意 | `"public"` | 実行時の `search_path`。`$user` を除く先頭のスキーマがリセットおよび比較対象になります（例: `"app, public"` の場合は `app` が対象、未作成なら自動作成） |
+| `sslmode` | 任意 | `"prefer"` | SSL 接続モード |
+
+> [!WARNING]
+> `[databases.old]` と `[databases.new]` でホスト・ポート・データベース名・主スキーマ（`search_path` の先頭具体スキーマ）がすべて同一になる設定はエラーとして拒否されます。
+
+## CLI としての使い方
+
+```powershell
+# 基本的な実行（標準出力に Old -> New の移行 SQL を出力）
+uv run pgadmin-schemadiff --config config.toml --old ./ddl/old.sql --new ./ddl/new.sql
+
+# ディレクトリを指定（直下の .sql のみをアルファベット昇順で実行・非再帰）
+uv run pgadmin-schemadiff -c config.toml --old ./ddl/v1_dir --new ./ddl/v2_dir
+
+# zip アーカイブを指定（展開して直下の .sql をアルファベット昇順で実行）
+uv run pgadmin-schemadiff -c config.toml --old ./v1.zip --new ./v2.zip > migration.sql
+
+# JSON 形式で差分詳細・サマリ付きで出力
+uv run pgadmin-schemadiff -c config.toml --old ./old --new ./new --format json
+```
+
+`python -m pgadmin_schemadiff` としても実行できます。
+
+終了コード:
+- `0`: 正常終了
+- `1`: DDL 読み込みエラー、PostgreSQL 接続・実行エラー、または pgAdmin 4 実行エラー
+- `2`: コマンドライン引数または設定ファイル（`ConfigError`）エラー
+
+## Python ライブラリとしての使い方
+
+```python
+from pgadmin_schemadiff import SchemaDiffClient, load_config, run_schema_diff
+
+# 1. 簡易関数で一括実行
+result = run_schema_diff(
+    config="config.toml",
+    old_ddl="path/to/old_ddl_dir",
+    new_ddl="path/to/new_ddl.zip",
+)
+print(result.script)
+for item in result.items:
+    print(item.node_type, item.title, item.status)
+
+# 2. Config オブジェクトとクライアントを明示的に使う場合
+config = load_config("config.toml")
+client = SchemaDiffClient(config)
+result = client.diff_ddls("old.sql", "new.sql", include_identical_ddl=True)
+```
+
+## テストとカバレッジ確認
+
+```powershell
+mise exec -- uv run pytest --cov=pgadmin_schemadiff --cov-report=term-missing
+```
+
+（実 PostgreSQL サーバーへの接続をモックした高速な単体テスト一式が `tests/` 配下に含まれています。）
