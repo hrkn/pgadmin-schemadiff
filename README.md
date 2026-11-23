@@ -44,6 +44,7 @@ mise exec -- uv sync
 | --- | --- | --- | --- |
 | `install_path` (別名: `path`) | 必須 | - | pgAdmin 4 のインストールルートパス（`web/pgAdmin4.py` と同梱 Python が含まれる場所） |
 | `timeout_seconds` | 任意 | `300` | pgAdmin 4 サブプロセスのタイムアウト秒数 |
+| `pg_dump_path` | 任意 | 自動検出 | `--full-dump` で使用する `pg_dump` 実行ファイル（またはディレクトリ）パス。省略時は `pgAdmin 4` の `runtime/` 等や `PATH` から探索します |
 
 ### `[ignore]`（比較時の無視設定）
 
@@ -97,13 +98,28 @@ uv run pgadmin-schemadiff -c config.toml --old ./v1.zip --new ./v2.zip > migrati
 
 # JSON 形式で差分詳細・サマリ付きで出力
 uv run pgadmin-schemadiff -c config.toml --old ./old --new ./new --format json
+
+# 差分抽出後に Target (Old DB) へ移行 SQL を適用する
+uv run pgadmin-schemadiff -c config.toml --old ./old --new ./new --apply
+
+# 差分抽出後に Source (New DB) のスキーマのみダンプを出力する（出力先省略時は full_dump.sql）
+uv run pgadmin-schemadiff -c config.toml --old ./old --new ./new --full-dump
+uv run pgadmin-schemadiff -c config.toml --old ./old --new ./new --full-dump ./out/schema.sql
+
+# --apply と --full-dump の併用
+uv run pgadmin-schemadiff -c config.toml --old ./old --new ./new --full-dump ./out/schema.sql --apply
 ```
+
+### 追加オプションの詳細
+
+- `--apply`: スキーマ差分抽出後、生成された移行 SQL を Target（`[databases.old]`）へ適用します。適用に失敗した場合でも、抽出された差分 SQL / JSON は標準出力に出力したうえで標準エラー出力にエラーを表示し、終了コード `1` で終了します。
+- `--full-dump [FILE]`: スキーマ差分抽出後、`pg_dump --schema-only` を用いて Source（`[databases.new]`）の比較対象主スキーマのみのダンプファイルを作成します。`[ignore]` 設定（`owner` → `--no-owner`、`tablespace` → `--no-tablespaces`、`grants` → `--no-privileges`）がダンプ出力にも反映されます。`FILE` を省略した場合は `full_dump.sql` に出力します。
 
 `python -m pgadmin_schemadiff` としても実行できます。
 
 終了コード:
 - `0`: 正常終了
-- `1`: DDL 読み込みエラー、PostgreSQL 接続・実行エラー、または pgAdmin 4 実行エラー
+- `1`: DDL 読み込みエラー、PostgreSQL 接続・実行エラー、pgAdmin 4 実行エラー、`pg_dump` エラー、または `--apply` 適用失敗
 - `2`: コマンドライン引数または設定ファイル（`ConfigError`）エラー
 
 ## Python ライブラリとしての使い方
@@ -111,11 +127,13 @@ uv run pgadmin-schemadiff -c config.toml --old ./old --new ./new --format json
 ```python
 from pgadmin_schemadiff import SchemaDiffClient, load_config, run_schema_diff
 
-# 1. 簡易関数で一括実行
+# 1. 簡易関数で一括実行（必要に応じて apply / full_dump も指定可能）
 result = run_schema_diff(
     config="config.toml",
     old_ddl="path/to/old_ddl_dir",
     new_ddl="path/to/new_ddl.zip",
+    apply=False,
+    full_dump=None,  # True で "full_dump.sql"、パス文字列/Path で出力先指定
 )
 print(result.script)
 for item in result.items:

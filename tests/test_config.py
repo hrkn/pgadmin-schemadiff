@@ -29,6 +29,7 @@ def test_load_config_full_and_defaults(tmp_path: Path) -> None:
 [pgadmin]
 install_path = "C:/pgAdmin4"
 timeout_seconds = 120
+pg_dump_path = "C:/PostgreSQL/17/bin/pg_dump.exe"
 
 [ignore]
 owner = true
@@ -60,6 +61,7 @@ database = "new_db"
     cfg = load_config(cfg_path)
     assert cfg.pgadmin_path == Path("C:/pgAdmin4")
     assert cfg.timeout_seconds == 120
+    assert cfg.pg_dump_path == Path("C:/PostgreSQL/17/bin/pg_dump.exe")
     assert cfg.ignore == IgnoreOptions(
         owner=True, whitespace=True, tablespace=True, grants=True
     )
@@ -114,6 +116,7 @@ search_path = "s2"
     )
     cfg = load_config(cfg_path)
     assert cfg.pgadmin_path == Path("/opt/pgadmin4")
+    assert cfg.pg_dump_path is None
     assert cfg.ignore.whitespace is True
     assert cfg.output_filter.same is True
     assert cfg.output_filter.source_only is False
@@ -387,3 +390,41 @@ def test_dataclass_validation() -> None:
         Config(pgadmin_path=Path("/a"), old_db=old, new_db=new, timeout_seconds=-5)
     with pytest.raises(ConfigError, match="pgadmin_path"):
         Config(pgadmin_path="   ", old_db=old, new_db=new)  # type: ignore[arg-type]
+    with pytest.raises(ConfigError, match="pg_dump_path"):
+        Config(pgadmin_path=Path("/a"), old_db=old, new_db=new, pg_dump_path="   ")  # type: ignore[arg-type]
+
+
+def test_load_config_pg_dump_path_errors(tmp_path: Path) -> None:
+    empty_dump = _write_toml(
+        tmp_path,
+        """
+[pgadmin]
+install_path = "/a"
+pg_dump_path = "  "
+[databases.old]
+host = "h1"
+user = "u"
+[databases.new]
+host = "h2"
+user = "u"
+""",
+    )
+    with pytest.raises(ConfigError, match="pgadmin.pg_dump_path"):
+        load_config(empty_dump)
+
+    non_str_dump = _write_toml(
+        tmp_path,
+        """
+[pgadmin]
+install_path = "/a"
+pg_dump_path = 123
+[databases.old]
+host = "h1"
+user = "u"
+[databases.new]
+host = "h2"
+user = "u"
+""",
+    )
+    with pytest.raises(ConfigError, match="pgadmin.pg_dump_path"):
+        load_config(non_str_dump)

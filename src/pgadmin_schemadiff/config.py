@@ -167,12 +167,17 @@ class Config:
     ignore: IgnoreOptions = field(default_factory=IgnoreOptions)
     output_filter: OutputFilterOptions = field(default_factory=OutputFilterOptions)
     timeout_seconds: int = 300
+    pg_dump_path: Path | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.pgadmin_path, Path) or not str(self.pgadmin_path).strip():
             raise ConfigError("Configuration 'pgadmin_path' must be a valid Path.")
         if isinstance(self.timeout_seconds, bool) or not isinstance(self.timeout_seconds, int) or self.timeout_seconds <= 0:
             raise ConfigError("Configuration 'timeout_seconds' must be a positive integer.")
+        if self.pg_dump_path is not None and (
+            not isinstance(self.pg_dump_path, Path) or not str(self.pg_dump_path).strip()
+        ):
+            raise ConfigError("Configuration 'pg_dump_path' must be a valid Path.")
 
         old_key = (
             self.old_db.host.strip().lower(),
@@ -192,19 +197,24 @@ class Config:
             )
 
 
-def _parse_pgadmin_section(raw: dict[str, Any]) -> tuple[Path, int]:
+def _parse_pgadmin_section(raw: dict[str, Any]) -> tuple[Path, int, Path | None]:
     has_top_path = "pgadmin_path" in raw
     has_pgadmin_section = "pgadmin" in raw
 
     install_path_str: str | None = None
     timeout_seconds = 300
+    pg_dump_path: Path | None = None
 
     if has_top_path:
         install_path_str = _require_str(raw["pgadmin_path"], "pgadmin_path")
 
     if has_pgadmin_section:
         pgadmin_tbl = _require_table(raw["pgadmin"], "pgadmin")
-        _reject_unknown_keys(pgadmin_tbl, {"install_path", "path", "timeout_seconds"}, "pgadmin")
+        _reject_unknown_keys(
+            pgadmin_tbl,
+            {"install_path", "path", "timeout_seconds", "pg_dump_path"},
+            "pgadmin",
+        )
         has_path, resolved_path = _resolve_alias(pgadmin_tbl, "install_path", "path", "pgadmin")
         if has_path:
             section_path = _require_str(resolved_path, "pgadmin.install_path")
@@ -220,13 +230,17 @@ def _parse_pgadmin_section(raw: dict[str, Any]) -> tuple[Path, int]:
             )
             if timeout_seconds <= 0:
                 raise ConfigError("Configuration 'pgadmin.timeout_seconds' must be positive.")
+        if "pg_dump_path" in pgadmin_tbl:
+            pg_dump_path = Path(
+                _require_str(pgadmin_tbl["pg_dump_path"], "pgadmin.pg_dump_path")
+            )
 
     if install_path_str is None:
         raise ConfigError(
             "Missing pgAdmin 4 installation path: set 'install_path' under '[pgadmin]'."
         )
 
-    return Path(install_path_str), timeout_seconds
+    return Path(install_path_str), timeout_seconds, pg_dump_path
 
 
 def _parse_ignore_section(raw: dict[str, Any]) -> IgnoreOptions:
@@ -401,7 +415,7 @@ def load_config(path: str | Path) -> Config:
     if unknown_top:
         raise ConfigError(f"Unknown top-level configuration section(s): {', '.join(unknown_top)}")
 
-    pgadmin_path, timeout_seconds = _parse_pgadmin_section(raw)
+    pgadmin_path, timeout_seconds, pg_dump_path = _parse_pgadmin_section(raw)
     ignore = _parse_ignore_section(raw)
     output_filter = _parse_filter_section(raw)
     old_db, new_db = _parse_databases_section(raw)
@@ -413,4 +427,5 @@ def load_config(path: str | Path) -> Config:
         ignore=ignore,
         output_filter=output_filter,
         timeout_seconds=timeout_seconds,
+        pg_dump_path=pg_dump_path,
     )

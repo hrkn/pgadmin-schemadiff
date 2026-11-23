@@ -8,12 +8,16 @@ from pathlib import Path
 import pytest
 
 from pgadmin_schemadiff import (
+    DEFAULT_FULL_DUMP_FILENAME,
+    ApplyResult,
     Config,
     DatabaseConfig,
+    DatabaseError,
     DDLSourceError,
     DiffItem,
     DiffStatus,
     OutputFilterOptions,
+    PgDumpError,
     SchemaDiffClient,
     cli,
     run_schema_diff,
@@ -144,7 +148,12 @@ def test_cli_sql_json_and_error_exit_codes(
     assert rc_cfg_err == 2
     assert "Configuration error:" in capsys.readouterr().err
 
-    def raise_ddl_err(self: SchemaDiffClient, _old: object, _new: object) -> object:
+    def raise_ddl_err(
+        self: SchemaDiffClient,
+        _old: object,
+        _new: object,
+        **_kwargs: object,
+    ) -> object:
         raise DDLSourceError("missing ddl file")
 
     monkeypatch.setattr(SchemaDiffClient, "diff_ddls", raise_ddl_err)
@@ -191,3 +200,226 @@ def test_client_diff_existing_respects_filter(monkeypatch: pytest.MonkeyPatch) -
     assert [i.title for i in res.items] == ["only_old"]
     assert "DROP TABLE only_old;" in res.script
     assert "CREATE TABLE only_new();" not in res.script
+
+
+def test_client_apply_and_full_dump_options(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg_path = _write_sample_config(tmp_path)
+    old_sql = tmp_path / "old.sql"
+    new_sql = tmp_path / "new.sql"
+    old_sql.write_text("CREATE TABLE a (id int);", encoding="utf-8")
+    new_sql.write_text("CREATE TABLE b (id int);", encoding="utf-8")
+
+    monkeypatch.setattr("pgadmin_schemadiff.client.prepare_database", lambda _db, _sc: None)
+    monkeypatch.setattr(
+        "pgadmin_schemadiff.client.run_pgadmin_diff",
+        lambda _cfg, include_identical_ddl=False: [
+            DiffItem(
+                id=1,
+                node_type="table",
+                label="Tables",
+                title="b",
+                status=DiffStatus.SOURCE_ONLY,
+                oid=10,
+                diff_ddl="CREATE TABLE b (id int);",
+            )
+        ],
+    )
+
+    events: list[tuple[str, object]] = []
+
+    def fake_apply_diff_script(db_cfg: DatabaseConfig, script: str) -> None:
+        events.append(("apply", db_cfg.database, script))
+
+    def fake_run_pg_dump_schema(_cfg: Config, output_path: str | Path) -> Path:
+        if isinstance(output_path, str) and not output_path.strip():
+            raise PgDumpError("Full dump output path must not be empty.")
+        events.append(("dump", output_path))
+        return Path(output_path)
+
+    monkeypatch.setattr("pgadmin_schemadiff.client.apply_diff_script", fake_apply_diff_script)
+    monkeypatch.setattr("pgadmin_schemadiff.client.run_pg_dump_schema", fake_run_pg_dump_schema)
+
+    res_both = run_schema_diff(cfg_path, old_sql, new_sql, apply=True, full_dump=True)
+    assert res_both.full_dump_path == Path(DEFAULT_FULL_DUMP_FILENAME)
+    assert res_both.apply_result == ApplyResult(succeeded=True)
+    # Full dump must run before apply, and apply must target Old DB (db_old).
+    assert events[0] == ("dump", DEFAULT_FULL_DUMP_FILENAME)
+    assert events[1][0] == "apply"
+    assert events[1][1] == "db_old"
+    assert "CREATE TABLE b (id int);" in str(events[1][2])
+
+    events.clear()
+    custom_dump = tmp_path / "custom.sql"
+    res_custom = run_schema_diff(cfg_path, old_sql, new_sql, full_dump=custom_dump)
+    assert res_custom.full_dump_path == custom_dump
+    assert res_custom.apply_result is None
+    assert events == [("dump", custom_dump)]
+
+    def fail_apply(_db_cfg: DatabaseConfig, _script: str) -> None:
+        raise DatabaseError("relation already exists")
+
+    monkeypatch.setattr("pgadmin_schemadiff.client.apply_diff_script", fail_apply)
+    res_fail = run_schema_diff(
+        cfg_path, old_sql, new_sql, apply=True, full_dump="dump_before_fail.sql"
+    )
+    assert res_fail.full_dump_path == Path("dump_before_fail.sql")
+    assert res_fail.apply_result == ApplyResult(
+        succeeded=False, error="relation already exists"
+    )
+
+    with pytest.raises(PgDumpError, match="must not be empty"):
+        run_schema_diff(cfg_path, old_sql, new_sql, full_dump="")
+
+
+def test_cli_apply_and_full_dump_flags(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cfg_path = _write_sample_config(tmp_path)
+    old_sql = tmp_path / "old.sql"
+    new_sql = tmp_path / "new.sql"
+    old_sql.write_text("CREATE TABLE a (id int);", encoding="utf-8")
+    new_sql.write_text("CREATE TABLE b (id int);", encoding="utf-8")
+
+    monkeypatch.setattr("pgadmin_schemadiff.client.prepare_database", lambda _db, _sc: None)
+    monkeypatch.setattr(
+        "pgadmin_schemadiff.client.run_pgadmin_diff",
+        lambda _cfg, include_identical_ddl=False: [
+            DiffItem(
+                id=1,
+                node_type="table",
+                label="Tables",
+                title="b",
+                status=DiffStatus.SOURCE_ONLY,
+                oid=10,
+                diff_ddl="CREATE TABLE b (id int);",
+            )
+        ],
+    )
+
+    applied_scripts: list[str] = []
+    dumped_paths: list[str | Path] = []
+
+    monkeypatch.setattr(
+        "pgadmin_schemadiff.client.apply_diff_script",
+        lambda _db, script: applied_scripts.append(script),
+    )
+    monkeypatch.setattr(
+        "pgadmin_schemadiff.client.run_pg_dump_schema",
+        lambda _cfg, out_path: dumped_paths.append(out_path) or Path(out_path),
+    )
+
+    rc_apply_ok = cli.main(
+        ["-c", str(cfg_path), "--old", str(old_sql), "--new", str(new_sql), "--apply"]
+    )
+    assert rc_apply_ok == 0
+    captured = capsys.readouterr()
+    assert "CREATE TABLE b (id int);" in captured.out
+    assert captured.err == ""
+    assert len(applied_scripts) == 1
+
+    rc_dump_default = cli.main(
+        ["-c", str(cfg_path), "--old", str(old_sql), "--new", str(new_sql), "--full-dump"]
+    )
+    assert rc_dump_default == 0
+    assert capsys.readouterr().out
+    assert dumped_paths[-1] == DEFAULT_FULL_DUMP_FILENAME
+
+    rc_dump_and_apply = cli.main(
+        [
+            "-c",
+            str(cfg_path),
+            "--old",
+            str(old_sql),
+            "--new",
+            str(new_sql),
+            "--full-dump",
+            "--apply",
+        ]
+    )
+    assert rc_dump_and_apply == 0
+    assert capsys.readouterr().out
+    assert dumped_paths[-1] == DEFAULT_FULL_DUMP_FILENAME
+
+    custom_out = str(tmp_path / "custom_dump.sql")
+    rc_dump_named = cli.main(
+        [
+            "-c",
+            str(cfg_path),
+            "--old",
+            str(old_sql),
+            "--new",
+            str(new_sql),
+            "--full-dump",
+            custom_out,
+        ]
+    )
+    assert rc_dump_named == 0
+    assert capsys.readouterr().out
+    assert dumped_paths[-1] == custom_out
+
+    eq_out = str(tmp_path / "eq_dump.sql")
+    rc_dump_eq = cli.main(
+        [
+            "-c",
+            str(cfg_path),
+            "--old",
+            str(old_sql),
+            "--new",
+            str(new_sql),
+            f"--full-dump={eq_out}",
+            "--format",
+            "json",
+        ]
+    )
+    assert rc_dump_eq == 0
+    json_out = json.loads(capsys.readouterr().out)
+    assert json_out["full_dump_path"] == eq_out
+
+    def fail_apply(_db: DatabaseConfig, _script: str) -> None:
+        raise DatabaseError("cannot alter table")
+
+    monkeypatch.setattr("pgadmin_schemadiff.client.apply_diff_script", fail_apply)
+
+    rc_apply_fail_sql = cli.main(
+        ["-c", str(cfg_path), "--old", str(old_sql), "--new", str(new_sql), "--apply"]
+    )
+    assert rc_apply_fail_sql == 1
+    cap_fail_sql = capsys.readouterr()
+    assert "CREATE TABLE b (id int);" in cap_fail_sql.out
+    assert "Error: cannot alter table" in cap_fail_sql.err
+
+    rc_apply_fail_json = cli.main(
+        [
+            "-c",
+            str(cfg_path),
+            "--old",
+            str(old_sql),
+            "--new",
+            str(new_sql),
+            "--apply",
+            "--format",
+            "json",
+        ]
+    )
+    assert rc_apply_fail_json == 1
+    cap_fail_json = capsys.readouterr()
+    parsed_fail = json.loads(cap_fail_json.out)
+    assert parsed_fail["apply"] == {"succeeded": False, "error": "cannot alter table"}
+    assert "Error: cannot alter table" in cap_fail_json.err
+
+    def fail_dump(_cfg: Config, _out: str | Path) -> Path:
+        raise PgDumpError("pg_dump failed")
+
+    monkeypatch.setattr("pgadmin_schemadiff.client.run_pg_dump_schema", fail_dump)
+    rc_dump_err = cli.main(
+        ["-c", str(cfg_path), "--old", str(old_sql), "--new", str(new_sql), "--full-dump"]
+    )
+    assert rc_dump_err == 1
+    cap_dump_err = capsys.readouterr()
+    assert cap_dump_err.out == ""
+    assert "Error: pg_dump failed" in cap_dump_err.err

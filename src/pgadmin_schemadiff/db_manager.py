@@ -337,6 +337,44 @@ def apply_ddl_scripts(
             ) from exc
 
 
+def apply_sql_script(
+    conn: psycopg.Connection,
+    db_config: DatabaseConfig,
+    script: str,
+    *,
+    script_name: str = "diff script",
+) -> None:
+    """Execute a SQL script after setting the configured ``search_path``."""
+    if not script.strip():
+        return
+    set_search_path_stmt = _build_set_search_path(db_config)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(set_search_path_stmt)
+            cur.execute(script)
+    except psycopg.Error as exc:
+        tx_status = getattr(getattr(conn, "info", None), "transaction_status", None)
+        if tx_status == psycopg.pq.TransactionStatus.INERROR:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("ROLLBACK")
+            except psycopg.Error:
+                pass
+        raise DatabaseError(
+            f"Failed to apply {script_name} to database '{db_config.database}' "
+            f"(schema '{db_config.primary_schema}'): {exc}"
+        ) from exc
+
+
+def apply_diff_script(
+    db_config: DatabaseConfig,
+    script: str,
+) -> None:
+    """Connect to the target PostgreSQL database and apply the generated diff script."""
+    with connect_db(db_config) as conn:
+        apply_sql_script(conn, db_config, script, script_name="diff script")
+
+
 def prepare_database(
     db_config: DatabaseConfig,
     scripts: list[DDLScript],

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
+from pathlib import Path
 from typing import Any
 
 from pgadmin_schemadiff.config import OutputFilterOptions
@@ -89,6 +90,21 @@ class DiffItem:
         }
 
 
+@dataclass(frozen=True)
+class ApplyResult:
+    """Outcome of attempting to apply the generated diff script to Target."""
+
+    succeeded: bool
+    error: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize this apply result to a JSON-compatible dictionary."""
+        return {
+            "succeeded": self.succeeded,
+            "error": self.error,
+        }
+
+
 @dataclass
 class DiffResult:
     """Complete result of a schema diff run."""
@@ -96,10 +112,12 @@ class DiffResult:
     script: str
     items: list[DiffItem]
     all_items: list[DiffItem]
+    apply_result: ApplyResult | None = None
+    full_dump_path: Path | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize the diff result to a JSON-compatible dictionary."""
-        return {
+        data: dict[str, Any] = {
             "script": self.script,
             "items": [item.to_dict() for item in self.items],
             "summary": {
@@ -119,6 +137,11 @@ class DiffResult:
                 ),
             },
         }
+        if self.apply_result is not None:
+            data["apply"] = self.apply_result.to_dict()
+        if self.full_dump_path is not None:
+            data["full_dump_path"] = str(self.full_dump_path)
+        return data
 
 
 def compute_depend_levels(items: list[DiffItem]) -> list[DiffItem]:

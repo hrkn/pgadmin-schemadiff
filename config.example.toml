@@ -6,6 +6,8 @@
 install_path = "C:\\Program Files\\PostgreSQL\\17\\pgAdmin 4"
 # pgAdmin 4 ワーカーのタイムアウト秒数 (省略時: 300)
 timeout_seconds = 300
+# --full-dump で使用する pg_dump 実行ファイルパス (省略時は pgAdmin 4 配下または PATH から自動検出)
+# pg_dump_path = "C:\\Program Files\\PostgreSQL\\17\\bin\\pg_dump.exe"
 
 [ignore]
 # pgAdmin 4 の Schema Diff 比較オプション相当

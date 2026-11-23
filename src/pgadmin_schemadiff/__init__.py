@@ -10,6 +10,8 @@ from pgadmin_schemadiff.config import (
 )
 from pgadmin_schemadiff.db_manager import (
     apply_ddl_scripts,
+    apply_diff_script,
+    apply_sql_script,
     connect_db,
     ensure_and_reset_schema,
     prepare_database,
@@ -20,7 +22,13 @@ from pgadmin_schemadiff.exceptions import (
     DatabaseError,
     DDLSourceError,
     PgAdminRuntimeError,
+    PgDumpError,
     SchemaDiffError,
+)
+from pgadmin_schemadiff.pg_dump_runner import (
+    DEFAULT_FULL_DUMP_FILENAME,
+    resolve_pg_dump,
+    run_pg_dump_schema,
 )
 from pgadmin_schemadiff.pgadmin_runner import (
     PgAdminLayout,
@@ -29,6 +37,7 @@ from pgadmin_schemadiff.pgadmin_runner import (
 )
 from pgadmin_schemadiff.script_generator import (
     SCRIPT_HEADER,
+    ApplyResult,
     DiffItem,
     DiffResult,
     DiffStatus,
@@ -38,10 +47,12 @@ from pgadmin_schemadiff.script_generator import (
 )
 
 __all__ = [
+    "ApplyResult",
     "Config",
     "ConfigError",
     "DDLScript",
     "DDLSourceError",
+    "DEFAULT_FULL_DUMP_FILENAME",
     "DatabaseConfig",
     "DatabaseError",
     "DiffItem",
@@ -51,10 +62,13 @@ __all__ = [
     "OutputFilterOptions",
     "PgAdminLayout",
     "PgAdminRuntimeError",
+    "PgDumpError",
     "SCRIPT_HEADER",
     "SchemaDiffClient",
     "SchemaDiffError",
     "apply_ddl_scripts",
+    "apply_diff_script",
+    "apply_sql_script",
     "compute_depend_levels",
     "connect_db",
     "ensure_and_reset_schema",
@@ -63,7 +77,9 @@ __all__ = [
     "load_config",
     "load_ddl_scripts",
     "prepare_database",
+    "resolve_pg_dump",
     "resolve_pgadmin_layout",
+    "run_pg_dump_schema",
     "run_pgadmin_diff",
     "run_schema_diff",
 ]

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import types
+
 import psycopg
 from psycopg import sql
 import pytest
@@ -9,6 +11,8 @@ import pytest
 from pgadmin_schemadiff.config import DatabaseConfig
 from pgadmin_schemadiff.db_manager import (
     apply_ddl_scripts,
+    apply_diff_script,
+    apply_sql_script,
     connect_db,
     ensure_and_reset_schema,
     prepare_database,
@@ -46,9 +50,10 @@ class FakeCursor:
 
 
 class FakeConnection:
-    def __init__(self, cursor: FakeCursor) -> None:
+    def __init__(self, cursor: FakeCursor, tx_status: object = None) -> None:
         self._cursor = cursor
         self.closed = False
+        self.info = types.SimpleNamespace(transaction_status=tx_status)
 
     def __enter__(self) -> FakeConnection:
         return self
@@ -198,3 +203,46 @@ def test_apply_ddl_scripts_and_prepare_database(monkeypatch: pytest.MonkeyPatch)
     prepare_database(cfg, [DDLScript(name="01.sql", sql="CREATE TABLE x (id int);")])
     assert full_conn.closed is True
     assert any("CREATE TABLE x" in s for s, _ in full_cur.executed)
+
+
+def test_apply_sql_script_and_apply_diff_script(monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = DatabaseConfig(host="h", database="target_db", user="u", search_path="app, public")
+
+    empty_cur = FakeCursor()
+    apply_sql_script(FakeConnection(empty_cur), cfg, "   \n ")  # type: ignore[arg-type]
+    assert empty_cur.executed == []
+
+    ok_cur = FakeCursor()
+    apply_sql_script(FakeConnection(ok_cur), cfg, "BEGIN; CREATE TABLE t (id int); END;")  # type: ignore[arg-type]
+    assert ok_cur.executed == [
+        ('SET search_path TO "app", "public"', None),
+        ("BEGIN; CREATE TABLE t (id int); END;", None),
+    ]
+
+    fail_cur = FakeCursor(fail_on="BAD APPLY")
+    fail_conn = FakeConnection(fail_cur, tx_status=psycopg.pq.TransactionStatus.INERROR)
+    with pytest.raises(DatabaseError, match="Failed to apply diff script to database 'target_db'"):
+        apply_sql_script(fail_conn, cfg, "BEGIN; BAD APPLY; END;")  # type: ignore[arg-type]
+    assert ("ROLLBACK", None) in fail_cur.executed
+
+    class RollbackFailCursor(FakeCursor):
+        def execute(self, query: object, params: object = None) -> None:
+            rendered = query.as_string(None) if isinstance(query, sql.Composable) else str(query)
+            if rendered == "ROLLBACK":
+                raise psycopg.OperationalError("rollback failed")
+            super().execute(query, params)
+
+    rb_fail_cur = RollbackFailCursor(fail_on="BAD APPLY")
+    rb_fail_conn = FakeConnection(rb_fail_cur, tx_status=psycopg.pq.TransactionStatus.INERROR)
+    with pytest.raises(DatabaseError, match="Failed to apply diff script"):
+        apply_sql_script(rb_fail_conn, cfg, "BAD APPLY;")  # type: ignore[arg-type]
+
+    diff_cur = FakeCursor()
+    diff_conn = FakeConnection(diff_cur)
+    monkeypatch.setattr("pgadmin_schemadiff.db_manager.connect_db", lambda _cfg: diff_conn)
+    apply_diff_script(cfg, "CREATE TABLE y (id int);")
+    assert diff_conn.closed is True
+    assert diff_cur.executed == [
+        ('SET search_path TO "app", "public"', None),
+        ("CREATE TABLE y (id int);", None),
+    ]

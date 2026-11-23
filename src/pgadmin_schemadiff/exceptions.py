@@ -19,3 +19,7 @@ class DatabaseError(SchemaDiffError):
 
 class PgAdminRuntimeError(SchemaDiffError):
     """Raised when pgAdmin 4 runtime discovery or schema comparison execution fails."""
+
+
+class PgDumpError(SchemaDiffError):
+    """Raised when locating or running pg_dump fails."""

@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from pgadmin_schemadiff.config import OutputFilterOptions
 from pgadmin_schemadiff.exceptions import PgAdminRuntimeError
 from pgadmin_schemadiff.script_generator import (
     SCRIPT_HEADER,
+    ApplyResult,
     DiffItem,
     DiffResult,
     DiffStatus,
@@ -169,7 +172,10 @@ def test_filter_and_generate_diff_script() -> None:
     assert empty_script == f"{SCRIPT_HEADER}BEGIN;\n\nEND;\n"
 
     result = DiffResult(script=script, items=filtered, all_items=all_items)
-    summary = result.to_dict()["summary"]
+    result_dict = result.to_dict()
+    assert "apply" not in result_dict
+    assert "full_dump_path" not in result_dict
+    summary = result_dict["summary"]
     assert summary == {
         "total": 5,
         "filtered": 4,
@@ -178,3 +184,18 @@ def test_filter_and_generate_diff_script() -> None:
         "different": 1,
         "identical": 1,
     }
+
+    applied_ok = ApplyResult(succeeded=True)
+    applied_err = ApplyResult(succeeded=False, error="syntax error")
+    assert applied_ok.to_dict() == {"succeeded": True, "error": None}
+    assert applied_err.to_dict() == {"succeeded": False, "error": "syntax error"}
+
+    extended = DiffResult(
+        script=script,
+        items=filtered,
+        all_items=all_items,
+        apply_result=applied_err,
+        full_dump_path=Path("out/full_dump.sql"),
+    ).to_dict()
+    assert extended["apply"] == {"succeeded": False, "error": "syntax error"}
+    assert extended["full_dump_path"] == str(Path("out/full_dump.sql"))
