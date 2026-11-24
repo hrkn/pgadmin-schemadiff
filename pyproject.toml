@@ -5,6 +5,7 @@ description = "CLI and Python library wrapper around pgAdmin 4's Schema Diff eng
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "click>=8.5.1",
     "pglast>=8.9",
     "psycopg[binary]>=3.2",
 ]

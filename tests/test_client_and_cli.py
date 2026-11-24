@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import click
+from click.testing import CliRunner
 import pytest
 
 from pgadmin_schemadiff import (
@@ -533,3 +535,121 @@ user = "postgres"
     )
     assert rc_bad_tweak == 2
     assert "Configuration error:" in capsys.readouterr().err
+
+
+def test_click_cli_runner_and_abort(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cfg_path = _write_sample_config(tmp_path)
+    old_sql = tmp_path / "old.sql"
+    new_sql = tmp_path / "new.sql"
+    old_sql.write_text("CREATE TABLE a (id int);", encoding="utf-8")
+    new_sql.write_text("CREATE TABLE b (id int);", encoding="utf-8")
+
+    runner = CliRunner()
+
+    for help_flag in ("--help", "-h"):
+        help_res = runner.invoke(cli.cli, [help_flag])
+        assert help_res.exit_code == 0
+        assert "--config" in help_res.output
+        assert "--apply" in help_res.output
+        assert "--full-dump" in help_res.output
+        assert "--tweak" in help_res.output
+
+    monkeypatch.setattr("pgadmin_schemadiff.client.prepare_database", lambda _db, _sc: None)
+    monkeypatch.setattr(
+        "pgadmin_schemadiff.client.run_pgadmin_diff",
+        lambda _cfg, include_identical_ddl=False: [
+            DiffItem(
+                id=1,
+                node_type="table",
+                label="Tables",
+                title="b",
+                status=DiffStatus.SOURCE_ONLY,
+                oid=10,
+                diff_ddl=(
+                    "CREATE TABLE b (id int);\n\n"
+                    "ALTER TABLE IF EXISTS b ALTER COLUMN id SET (pg_attver=123);\n"
+                ),
+            )
+        ],
+    )
+    applied: list[str] = []
+    dumped: list[str | Path] = []
+    monkeypatch.setattr(
+        "pgadmin_schemadiff.client.apply_diff_script",
+        lambda _db, script: applied.append(script),
+    )
+    monkeypatch.setattr(
+        "pgadmin_schemadiff.client.run_pg_dump_schema",
+        lambda _cfg, out_path: dumped.append(out_path) or Path(out_path),
+    )
+
+    res_sql = runner.invoke(
+        cli.cli,
+        [
+            "-c",
+            str(cfg_path),
+            "--old",
+            str(old_sql),
+            "--new",
+            str(new_sql),
+            "--full-dump",
+            "--apply",
+            "--tweak",
+            "omit_pg_attver",
+        ],
+    )
+    assert res_sql.exit_code == 0
+    assert "CREATE TABLE b (id int);" in res_sql.stdout
+    assert "pg_attver" not in res_sql.stdout
+    assert dumped[-1] == DEFAULT_FULL_DUMP_FILENAME
+    assert len(applied) == 1
+
+    custom_dump = str(tmp_path / "runner_dump.sql")
+    res_json = runner.invoke(
+        cli.cli,
+        [
+            "-c",
+            str(cfg_path),
+            "--old",
+            str(old_sql),
+            "--new",
+            str(new_sql),
+            "--full-dump",
+            custom_dump,
+            "--format",
+            "json",
+        ],
+    )
+    assert res_json.exit_code == 0
+    parsed = json.loads(res_json.stdout)
+    assert parsed["full_dump_path"] == custom_dump
+
+    res_cfg_err = runner.invoke(
+        cli.cli,
+        ["-c", str(tmp_path / "missing.toml"), "--old", str(old_sql), "--new", str(new_sql)],
+    )
+    assert res_cfg_err.exit_code == 2
+    assert "Configuration error:" in res_cfg_err.stderr
+
+    monkeypatch.setattr(
+        "pgadmin_schemadiff.client.apply_diff_script",
+        lambda _db, _sc: (_ for _ in ()).throw(DatabaseError("apply boom")),
+    )
+    res_apply_err = runner.invoke(
+        cli.cli,
+        ["-c", str(cfg_path), "--old", str(old_sql), "--new", str(new_sql), "--apply"],
+    )
+    assert res_apply_err.exit_code == 1
+    assert "CREATE TABLE b (id int);" in res_apply_err.stdout
+    assert "Error: apply boom" in res_apply_err.stderr
+
+    def raise_abort(*_args: object, **_kwargs: object) -> None:
+        raise click.Abort()
+
+    monkeypatch.setattr(cli.cli, "main", raise_abort)
+    assert cli.main([]) == 1
+    assert "Aborted!" in capsys.readouterr().err
