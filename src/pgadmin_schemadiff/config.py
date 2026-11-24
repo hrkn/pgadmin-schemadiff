@@ -158,6 +158,14 @@ class OutputFilterOptions:
 
 
 @dataclass(frozen=True)
+class TweakOptions:
+    """Post-processing tweaks applied to generated diff SQL and full dumps."""
+
+    omit_pg_attver: bool = False
+    comment_meta_restrict: bool = False
+
+
+@dataclass(frozen=True)
 class Config:
     """Top-level configuration for pgadmin-schemadiff."""
 
@@ -168,6 +176,7 @@ class Config:
     output_filter: OutputFilterOptions = field(default_factory=OutputFilterOptions)
     timeout_seconds: int = 300
     pg_dump_path: Path | None = None
+    tweak: TweakOptions = field(default_factory=TweakOptions)
 
     def __post_init__(self) -> None:
         if not isinstance(self.pgadmin_path, Path) or not str(self.pgadmin_path).strip():
@@ -308,6 +317,28 @@ def _parse_filter_section(raw: dict[str, Any]) -> OutputFilterOptions:
     )
 
 
+def _parse_tweak_section(raw: dict[str, Any]) -> TweakOptions:
+    if "tweak" not in raw:
+        return TweakOptions()
+    tbl = _require_table(raw["tweak"], "tweak")
+    _reject_unknown_keys(tbl, {"omit_pg_attver", "comment_meta_restrict"}, "tweak")
+
+    omit_pg_attver = (
+        _require_bool(tbl["omit_pg_attver"], "tweak.omit_pg_attver")
+        if "omit_pg_attver" in tbl
+        else False
+    )
+    comment_meta_restrict = (
+        _require_bool(tbl["comment_meta_restrict"], "tweak.comment_meta_restrict")
+        if "comment_meta_restrict" in tbl
+        else False
+    )
+    return TweakOptions(
+        omit_pg_attver=omit_pg_attver,
+        comment_meta_restrict=comment_meta_restrict,
+    )
+
+
 def _parse_database_entry(raw_db: Any, name: str) -> DatabaseConfig:
     section_name = f"databases.{name}"
     tbl = _require_table(raw_db, section_name)
@@ -410,7 +441,8 @@ def load_config(path: str | Path) -> Config:
         raise ConfigError(f"Invalid TOML in configuration file '{config_path}': {exc}") from exc
 
     unknown_top = sorted(
-        set(raw.keys()) - {"pgadmin", "pgadmin_path", "ignore", "filter", "output_filter", "databases"}
+        set(raw.keys())
+        - {"pgadmin", "pgadmin_path", "ignore", "filter", "output_filter", "databases", "tweak"}
     )
     if unknown_top:
         raise ConfigError(f"Unknown top-level configuration section(s): {', '.join(unknown_top)}")
@@ -419,6 +451,7 @@ def load_config(path: str | Path) -> Config:
     ignore = _parse_ignore_section(raw)
     output_filter = _parse_filter_section(raw)
     old_db, new_db = _parse_databases_section(raw)
+    tweak = _parse_tweak_section(raw)
 
     return Config(
         pgadmin_path=pgadmin_path,
@@ -428,4 +461,5 @@ def load_config(path: str | Path) -> Config:
         output_filter=output_filter,
         timeout_seconds=timeout_seconds,
         pg_dump_path=pg_dump_path,
+        tweak=tweak,
     )

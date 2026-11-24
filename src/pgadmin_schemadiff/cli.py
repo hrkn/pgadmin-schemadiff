@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import json
 import sys
 
@@ -10,6 +11,7 @@ from pgadmin_schemadiff.client import SchemaDiffClient
 from pgadmin_schemadiff.config import load_config
 from pgadmin_schemadiff.exceptions import ConfigError, SchemaDiffError
 from pgadmin_schemadiff.pg_dump_runner import DEFAULT_FULL_DUMP_FILENAME
+from pgadmin_schemadiff.sql_tweaks import AVAILABLE_TWEAKS, apply_tweak_overrides
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -59,6 +61,16 @@ def build_parser() -> argparse.ArgumentParser:
             f"(default: {DEFAULT_FULL_DUMP_FILENAME})."
         ),
     )
+    parser.add_argument(
+        "--tweak",
+        action="append",
+        default=[],
+        metavar="TWEAK",
+        help=(
+            "Enable or override SQL post-processing tweaks (repeatable or comma-separated; "
+            f"choices: {', '.join(AVAILABLE_TWEAKS)}; use '<name>=false' or 'no_<name>' to disable)."
+        ),
+    )
     return parser
 
 
@@ -69,6 +81,8 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         config = load_config(args.config)
+        if args.tweak:
+            config = replace(config, tweak=apply_tweak_overrides(config.tweak, args.tweak))
         result = SchemaDiffClient(config).diff_ddls(
             args.old,
             args.new,

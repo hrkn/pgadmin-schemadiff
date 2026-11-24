@@ -8,7 +8,8 @@ import shutil
 import subprocess
 
 from pgadmin_schemadiff.config import Config, DatabaseConfig, IgnoreOptions
-from pgadmin_schemadiff.exceptions import PgDumpError
+from pgadmin_schemadiff.exceptions import PgDumpError, SqlTweakError
+from pgadmin_schemadiff.sql_tweaks import comment_meta_restrict_in_sql
 
 DEFAULT_FULL_DUMP_FILENAME = "full_dump.sql"
 
@@ -157,5 +158,16 @@ def run_pg_dump_schema(
         raise PgDumpError(
             f"pg_dump failed (exit code {proc.returncode}): {err_detail}"
         )
+
+    if config.tweak.comment_meta_restrict:
+        try:
+            raw_dump = dest.read_bytes().decode("utf-8")
+            tweaked_dump = comment_meta_restrict_in_sql(raw_dump)
+            if tweaked_dump != raw_dump:
+                dest.write_bytes(tweaked_dump.encode("utf-8"))
+        except (OSError, UnicodeDecodeError, SqlTweakError) as exc:
+            raise PgDumpError(
+                f"Failed to apply comment_meta_restrict tweak to '{dest}': {exc}"
+            ) from exc
 
     return dest

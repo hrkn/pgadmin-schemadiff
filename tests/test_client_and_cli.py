@@ -19,6 +19,7 @@ from pgadmin_schemadiff import (
     OutputFilterOptions,
     PgDumpError,
     SchemaDiffClient,
+    TweakOptions,
     cli,
     run_schema_diff,
 )
@@ -423,3 +424,112 @@ def test_cli_apply_and_full_dump_flags(
     cap_dump_err = capsys.readouterr()
     assert cap_dump_err.out == ""
     assert "Error: pg_dump failed" in cap_dump_err.err
+
+
+def test_tweak_omit_pg_attver_and_cli_tweak_overrides(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cfg_path = tmp_path / "config_tweak.toml"
+    cfg_path.write_text(
+        """
+[pgadmin]
+install_path = "C:/pgAdmin4"
+
+[tweak]
+omit_pg_attver = true
+comment_meta_restrict = true
+
+[databases.old]
+host = "localhost"
+database = "db_old"
+user = "postgres"
+
+[databases.new]
+host = "localhost"
+database = "db_new"
+user = "postgres"
+""",
+        encoding="utf-8",
+    )
+    old_sql = tmp_path / "old.sql"
+    new_sql = tmp_path / "new.sql"
+    old_sql.write_text("CREATE TABLE a (id int);", encoding="utf-8")
+    new_sql.write_text("CREATE TABLE b (id int);", encoding="utf-8")
+
+    monkeypatch.setattr("pgadmin_schemadiff.client.prepare_database", lambda _db, _sc: None)
+    monkeypatch.setattr(
+        "pgadmin_schemadiff.client.run_pgadmin_diff",
+        lambda _cfg, include_identical_ddl=False: [
+            DiffItem(
+                id=1,
+                node_type="table",
+                label="Tables",
+                title="b",
+                status=DiffStatus.SOURCE_ONLY,
+                oid=10,
+                diff_ddl=(
+                    "CREATE TABLE public.b (id int);\n\n"
+                    "ALTER TABLE IF EXISTS public.b ALTER COLUMN id SET (pg_attver=2811141736);\n"
+                ),
+            ),
+            DiffItem(
+                id=2,
+                node_type="table",
+                label="Tables",
+                title="c_attver_only",
+                status=DiffStatus.DIFFERENT,
+                oid=20,
+                diff_ddl="ALTER TABLE IF EXISTS public.c ALTER COLUMN x RESET (pg_attver);\n",
+            ),
+        ],
+    )
+
+    applied: list[str] = []
+    seen_tweaks: list[TweakOptions] = []
+    monkeypatch.setattr(
+        "pgadmin_schemadiff.client.apply_diff_script",
+        lambda _db, script: applied.append(script),
+    )
+    monkeypatch.setattr(
+        "pgadmin_schemadiff.client.run_pg_dump_schema",
+        lambda cfg, out_path: seen_tweaks.append(cfg.tweak) or Path(out_path),
+    )
+
+    # Config enables both tweaks; --apply must receive SQL without pg_attver
+    rc = cli.main(
+        ["-c", str(cfg_path), "--old", str(old_sql), "--new", str(new_sql), "--apply", "--full-dump"]
+    )
+    assert rc == 0
+    out_sql = capsys.readouterr().out
+    assert "CREATE TABLE public.b (id int);" in out_sql
+    assert "pg_attver" not in out_sql
+    assert "pg_attver" not in applied[0]
+    assert seen_tweaks[-1] == TweakOptions(omit_pg_attver=True, comment_meta_restrict=True)
+
+    # CLI can override config [tweak] values to false
+    rc_override = cli.main(
+        [
+            "-c",
+            str(cfg_path),
+            "--old",
+            str(old_sql),
+            "--new",
+            str(new_sql),
+            "--full-dump",
+            "--tweak",
+            "omit_pg_attver=false,no_comment_meta_restrict",
+        ]
+    )
+    assert rc_override == 0
+    out_raw = capsys.readouterr().out
+    assert "pg_attver=2811141736" in out_raw
+    assert seen_tweaks[-1] == TweakOptions(omit_pg_attver=False, comment_meta_restrict=False)
+
+    # Invalid tweak name returns exit code 2
+    rc_bad_tweak = cli.main(
+        ["-c", str(cfg_path), "--old", str(old_sql), "--new", str(new_sql), "--tweak", "bogus"]
+    )
+    assert rc_bad_tweak == 2
+    assert "Configuration error:" in capsys.readouterr().err

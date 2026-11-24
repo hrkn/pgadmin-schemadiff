@@ -10,7 +10,7 @@ import types
 
 import pytest
 
-from pgadmin_schemadiff.config import Config, DatabaseConfig, IgnoreOptions
+from pgadmin_schemadiff.config import Config, DatabaseConfig, IgnoreOptions, TweakOptions
 from pgadmin_schemadiff.exceptions import PgDumpError
 from pgadmin_schemadiff.pg_dump_runner import (
     DEFAULT_FULL_DUMP_FILENAME,
@@ -24,6 +24,7 @@ def _sample_config(
     *,
     pg_dump_path: Path | None = None,
     ignore: IgnoreOptions | None = None,
+    tweak: TweakOptions | None = None,
     new_password: str = "pw_new",
     new_search_path: str = "new_sch",
 ) -> Config:
@@ -50,6 +51,7 @@ def _sample_config(
         ignore=ignore or IgnoreOptions(),
         timeout_seconds=60,
         pg_dump_path=pg_dump_path,
+        tweak=tweak or TweakOptions(),
     )
 
 
@@ -253,3 +255,73 @@ def test_run_pg_dump_schema_error_modes(
     )
     with pytest.raises(PgDumpError, match="fatal stdout"):
         run_pg_dump_schema(cfg, out_file)
+
+
+def test_run_pg_dump_schema_comment_meta_restrict_tweak(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pgadmin_dir = tmp_path / "pgAdmin 4"
+    pg_dump_exe = pgadmin_dir / "runtime" / "pg_dump.exe"
+    pg_dump_exe.parent.mkdir(parents=True)
+    pg_dump_exe.write_text("", encoding="utf-8")
+
+    sample_dump = (
+        "-- PostgreSQL database dump\r\n"
+        "\\restrict 7abcKey\r\n"
+        "CREATE TABLE public.t (id int);\r\n"
+        "\\unrestrict 7abcKey\r\n"
+    )
+
+    def fake_run(cmd: list[str], **_kwargs: object) -> types.SimpleNamespace:
+        dump_file = Path(cmd[cmd.index("--file") + 1])
+        dump_file.write_bytes(sample_dump.encode("utf-8"))
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    out_untouched = tmp_path / "untouched.sql"
+    run_pg_dump_schema(
+        _sample_config(pgadmin_dir, tweak=TweakOptions(comment_meta_restrict=False)),
+        out_untouched,
+    )
+    assert out_untouched.read_bytes().decode("utf-8") == sample_dump
+
+    out_tweaked = tmp_path / "tweaked.sql"
+    run_pg_dump_schema(
+        _sample_config(pgadmin_dir, tweak=TweakOptions(comment_meta_restrict=True)),
+        out_tweaked,
+    )
+    tweaked_text = out_tweaked.read_bytes().decode("utf-8")
+    assert "-- \\restrict 7abcKey\r\n" in tweaked_text
+    assert "-- \\unrestrict 7abcKey\r\n" in tweaked_text
+    assert "CREATE TABLE public.t (id int);\r\n" in tweaked_text
+
+    # No-op write path when dump contains no \restrict lines
+    no_restrict_dump = "CREATE TABLE public.t2 (id int);\n"
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, **_kw: (
+            Path(cmd[cmd.index("--file") + 1]).write_bytes(no_restrict_dump.encode("utf-8")),
+            types.SimpleNamespace(returncode=0, stdout="", stderr=""),
+        )[1],
+    )
+    out_clean = tmp_path / "clean.sql"
+    run_pg_dump_schema(
+        _sample_config(pgadmin_dir, tweak=TweakOptions(comment_meta_restrict=True)),
+        out_clean,
+    )
+    assert out_clean.read_text(encoding="utf-8") == no_restrict_dump
+
+    # Error reading/rewriting dump file wraps into PgDumpError
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_a, **_kw: types.SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+    with pytest.raises(PgDumpError, match="Failed to apply comment_meta_restrict tweak"):
+        run_pg_dump_schema(
+            _sample_config(pgadmin_dir, tweak=TweakOptions(comment_meta_restrict=True)),
+            tmp_path / "does_not_exist.sql",
+        )

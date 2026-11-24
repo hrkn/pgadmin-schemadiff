@@ -23,3 +23,7 @@ class PgAdminRuntimeError(SchemaDiffError):
 
 class PgDumpError(SchemaDiffError):
     """Raised when locating or running pg_dump fails."""
+
+
+class SqlTweakError(SchemaDiffError):
+    """Raised when parsing or rewriting SQL for a configured tweak fails."""

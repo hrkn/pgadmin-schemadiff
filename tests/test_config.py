@@ -11,6 +11,7 @@ from pgadmin_schemadiff.config import (
     DatabaseConfig,
     IgnoreOptions,
     OutputFilterOptions,
+    TweakOptions,
     load_config,
 )
 from pgadmin_schemadiff.exceptions import ConfigError
@@ -43,6 +44,10 @@ target_only = true
 different = true
 same = true
 
+[tweak]
+omit_pg_attver = true
+comment_meta_restrict = true
+
 [databases.old]
 host = "localhost"
 port = 5432
@@ -67,6 +72,9 @@ database = "new_db"
     )
     assert cfg.output_filter == OutputFilterOptions(
         source_only=False, target_only=True, different=True, same=True
+    )
+    assert cfg.tweak == TweakOptions(
+        omit_pg_attver=True, comment_meta_restrict=True
     )
     assert cfg.output_filter.selected_statuses() == {
         "Target Only",
@@ -117,6 +125,7 @@ search_path = "s2"
     cfg = load_config(cfg_path)
     assert cfg.pgadmin_path == Path("/opt/pgadmin4")
     assert cfg.pg_dump_path is None
+    assert cfg.tweak == TweakOptions()
     assert cfg.ignore.whitespace is True
     assert cfg.output_filter.same is True
     assert cfg.output_filter.source_only is False
@@ -428,3 +437,39 @@ user = "u"
     )
     with pytest.raises(ConfigError, match="pgadmin.pg_dump_path"):
         load_config(non_str_dump)
+
+
+def test_load_config_tweak_section_errors(tmp_path: Path) -> None:
+    unknown_tweak = _write_toml(
+        tmp_path,
+        """
+pgadmin_path = "/a"
+[tweak]
+bogus = true
+[databases.old]
+host = "h1"
+user = "u"
+[databases.new]
+host = "h2"
+user = "u"
+""",
+    )
+    with pytest.raises(ConfigError, match="Unknown configuration key"):
+        load_config(unknown_tweak)
+
+    non_bool_tweak = _write_toml(
+        tmp_path,
+        """
+pgadmin_path = "/a"
+[tweak]
+omit_pg_attver = "yes"
+[databases.old]
+host = "h1"
+user = "u"
+[databases.new]
+host = "h2"
+user = "u"
+""",
+    )
+    with pytest.raises(ConfigError, match="tweak.omit_pg_attver"):
+        load_config(non_bool_tweak)

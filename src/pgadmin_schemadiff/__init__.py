@@ -6,6 +6,7 @@ from pgadmin_schemadiff.config import (
     DatabaseConfig,
     IgnoreOptions,
     OutputFilterOptions,
+    TweakOptions,
     load_config,
 )
 from pgadmin_schemadiff.db_manager import (
@@ -24,6 +25,7 @@ from pgadmin_schemadiff.exceptions import (
     PgAdminRuntimeError,
     PgDumpError,
     SchemaDiffError,
+    SqlTweakError,
 )
 from pgadmin_schemadiff.pg_dump_runner import (
     DEFAULT_FULL_DUMP_FILENAME,
@@ -41,12 +43,20 @@ from pgadmin_schemadiff.script_generator import (
     DiffItem,
     DiffResult,
     DiffStatus,
+    apply_diff_tweaks,
     compute_depend_levels,
     filter_items,
     generate_diff_script,
 )
+from pgadmin_schemadiff.sql_tweaks import (
+    AVAILABLE_TWEAKS,
+    apply_tweak_overrides,
+    comment_meta_restrict_in_sql,
+    omit_pg_attver_from_sql,
+)
 
 __all__ = [
+    "AVAILABLE_TWEAKS",
     "ApplyResult",
     "Config",
     "ConfigError",
@@ -66,9 +76,14 @@ __all__ = [
     "SCRIPT_HEADER",
     "SchemaDiffClient",
     "SchemaDiffError",
+    "SqlTweakError",
+    "TweakOptions",
     "apply_ddl_scripts",
     "apply_diff_script",
+    "apply_diff_tweaks",
     "apply_sql_script",
+    "apply_tweak_overrides",
+    "comment_meta_restrict_in_sql",
     "compute_depend_levels",
     "connect_db",
     "ensure_and_reset_schema",
@@ -76,6 +91,7 @@ __all__ = [
     "generate_diff_script",
     "load_config",
     "load_ddl_scripts",
+    "omit_pg_attver_from_sql",
     "prepare_database",
     "resolve_pg_dump",
     "resolve_pgadmin_layout",

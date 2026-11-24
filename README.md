@@ -68,6 +68,15 @@ pgAdmin 4 の Filter メニューに対応します。pgAdmin 4 の Schema Diff 
 | `different` | `true` | 定義が異なるオブジェクト（`ALTER` / 再作成系）を含める |
 | `same` (別名: `identical`) | `false` | 同一のオブジェクトを結果リスト（`--format json` / Python API の `items`）に含める（※SQL 出力には変更クエリが無いため出力されません） |
 
+### `[tweak]`（SQL 後処理設定）
+
+`pglast`（PostgreSQL パーサ / レキサ）を用いて出力 SQL やフルダンプを整形・フィルタします。CLI の `--tweak` オプションで上書き可能です。
+
+| キー | デフォルト | 説明 |
+| --- | --- | --- |
+| `omit_pg_attver` | `false` | カラムの属性バージョン管理用の `pg_attver` オプション（`ALTER COLUMN ... SET/RESET (pg_attver...)`）を差分クエリから除去する |
+| `comment_meta_restrict` | `false` | `--full-dump` の出力に含まれるトップレベルの `\restrict` / `\unrestrict` メタコマンドを `--` でコメントアウトする |
+
 ### `[databases.old]` / `[databases.new]`（接続先 DB 設定）
 
 | キー | 必須 | デフォルト | 説明 |
@@ -108,12 +117,20 @@ uv run pgadmin-schemadiff -c config.toml --old ./old --new ./new --full-dump ./o
 
 # --apply と --full-dump の併用
 uv run pgadmin-schemadiff -c config.toml --old ./old --new ./new --full-dump ./out/schema.sql --apply
+
+# --tweak で pg_attver の除去や \restrict / \unrestrict のコメントアウトを有効化
+uv run pgadmin-schemadiff -c config.toml --old ./old --new ./new --full-dump --tweak omit_pg_attver --tweak comment_meta_restrict
+uv run pgadmin-schemadiff -c config.toml --old ./old --new ./new --full-dump --tweak omit_pg_attver,comment_meta_restrict
+
+# config.toml の [tweak] 設定を CLI から無効化する場合
+uv run pgadmin-schemadiff -c config.toml --old ./old --new ./new --tweak omit_pg_attver=false --tweak no_comment_meta_restrict
 ```
 
 ### 追加オプションの詳細
 
 - `--apply`: スキーマ差分抽出後、生成された移行 SQL を Target（`[databases.old]`）へ適用します。適用に失敗した場合でも、抽出された差分 SQL / JSON は標準出力に出力したうえで標準エラー出力にエラーを表示し、終了コード `1` で終了します。
 - `--full-dump [FILE]`: スキーマ差分抽出後、`pg_dump --schema-only` を用いて Source（`[databases.new]`）の比較対象主スキーマのみのダンプファイルを作成します。`[ignore]` 設定（`owner` → `--no-owner`、`tablespace` → `--no-tablespaces`、`grants` → `--no-privileges`）がダンプ出力にも反映されます。`FILE` を省略した場合は `full_dump.sql` に出力します。
+- `--tweak TWEAK`: `pglast` を用いた SQL 後処理を有効化または上書きします（複数回指定・カンマ区切り可）。指定可能な値は `omit_pg_attver`・`comment_meta_restrict` で、`<name>=false` や `no_<name>` で設定ファイルの指定を無効化できます。
 
 `python -m pgadmin_schemadiff` としても実行できます。
 

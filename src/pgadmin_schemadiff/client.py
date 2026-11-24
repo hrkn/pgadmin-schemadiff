@@ -16,6 +16,7 @@ from pgadmin_schemadiff.pgadmin_runner import run_pgadmin_diff
 from pgadmin_schemadiff.script_generator import (
     ApplyResult,
     DiffResult,
+    apply_diff_tweaks,
     filter_items,
     generate_diff_script,
 )
@@ -72,6 +73,8 @@ class SchemaDiffClient:
             self.config,
             include_identical_ddl=include_identical_ddl,
         )
+        if self.config.tweak.omit_pg_attver:
+            all_items = apply_diff_tweaks(all_items, self.config.tweak)
         filtered = filter_items(all_items, self.config.output_filter)
         script = generate_diff_script(all_items, self.config.output_filter)
 

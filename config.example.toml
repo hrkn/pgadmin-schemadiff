@@ -24,6 +24,11 @@ target_only = true  # Old のみに存在するオブジェクト (DROP 等)
 different = true    # Old と New で定義が異なるオブジェクト (ALTER 等)
 same = false        # 同一オブジェクト (--format json の items に含めるか。SQL 差分自体は生成されません)
 
+[tweak]
+# 出力 SQL / フルダンプに対する pglast ベースの後処理オプション
+omit_pg_attver = false        # ALTER COLUMN の pg_attver 属性設定・リセット文を差分クエリから除去する
+comment_meta_restrict = false # --full-dump の出力から \restrict / \unrestrict メタコマンドをコメントアウトする
+
 [databases.old]
 # Old 側 DDL を展開する PostgreSQL 接続先
 # 注意: search_path で指定された先頭スキーマ内のリソースは DDL 実行前にすべて DROP されます。

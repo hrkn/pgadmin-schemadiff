@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from pgadmin_schemadiff.config import OutputFilterOptions
+from pgadmin_schemadiff.config import OutputFilterOptions, TweakOptions
 from pgadmin_schemadiff.exceptions import PgAdminRuntimeError
 from pgadmin_schemadiff.script_generator import (
     SCRIPT_HEADER,
@@ -14,6 +14,7 @@ from pgadmin_schemadiff.script_generator import (
     DiffItem,
     DiffResult,
     DiffStatus,
+    apply_diff_tweaks,
     compute_depend_levels,
     filter_items,
     generate_diff_script,
@@ -199,3 +200,55 @@ def test_filter_and_generate_diff_script() -> None:
     ).to_dict()
     assert extended["apply"] == {"succeeded": False, "error": "syntax error"}
     assert extended["full_dump_path"] == str(Path("out/full_dump.sql"))
+
+
+def test_apply_diff_tweaks_and_generate_diff_script_omit_pg_attver() -> None:
+    attver_only = DiffItem(
+        id=1,
+        node_type="table",
+        label="Tables",
+        title="only_attver",
+        status=DiffStatus.DIFFERENT,
+        oid=10,
+        source_schema_name='"app"',
+        diff_ddl='ALTER TABLE IF EXISTS "app"."only_attver" ALTER COLUMN "c" SET (pg_attver=123);',
+    )
+    mixed = DiffItem(
+        id=2,
+        node_type="table",
+        label="Tables",
+        title="tbl2",
+        status=DiffStatus.SOURCE_ONLY,
+        oid=20,
+        diff_ddl=(
+            "CREATE TABLE app.tbl2 (id int);\n\n"
+            "ALTER TABLE IF EXISTS app.tbl2 ALTER COLUMN id SET (pg_attver=456);\n"
+        ),
+    )
+    unchanged = DiffItem(
+        id=3,
+        node_type="table",
+        label="Tables",
+        title="same",
+        status=DiffStatus.IDENTICAL,
+        oid=30,
+    )
+
+    items = [attver_only, mixed, unchanged]
+    assert apply_diff_tweaks(items, TweakOptions(omit_pg_attver=False)) == items
+
+    tweaked = apply_diff_tweaks(items, TweakOptions(omit_pg_attver=True))
+    assert tweaked[0].diff_ddl == ""
+    assert tweaked[1].diff_ddl == "CREATE TABLE app.tbl2 (id int);\n"
+    assert tweaked[2] is unchanged
+    # Original input items must not be mutated.
+    assert "pg_attver=123" in str(attver_only.diff_ddl)
+
+    script = generate_diff_script(
+        items,
+        OutputFilterOptions(),
+        tweak=TweakOptions(omit_pg_attver=True),
+    )
+    assert 'CREATE SCHEMA IF NOT EXISTS "app";' not in script
+    assert "pg_attver" not in script
+    assert "CREATE TABLE app.tbl2 (id int);" in script
