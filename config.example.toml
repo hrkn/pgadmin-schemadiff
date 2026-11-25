@@ -19,10 +19,10 @@ grants = false      # GRANT/REVOKE の違いを無視する (Ignore Grant/Revoke
 [filter]
 # pgAdmin 4 の Schema Diff 出力フィルタ相当
 # 本ツールでは Old を New に合わせるため、内部的に Source=New / Target=Old として比較します。
+same = false        # 同一オブジェクト (--format json の items に含めるか。SQL 差分自体は生成されません)
+different = true    # Old と New で定義が異なるオブジェクト (ALTER 等)
 source_only = true  # New のみに存在するオブジェクト (CREATE 等)
 target_only = true  # Old のみに存在するオブジェクト (DROP 等)
-different = true    # Old と New で定義が異なるオブジェクト (ALTER 等)
-same = false        # 同一オブジェクト (--format json の items に含めるか。SQL 差分自体は生成されません)
 
 [tweak]
 # 出力 SQL / フルダンプに対する pglast ベースの後処理オプション
