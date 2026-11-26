@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
+from pathlib import Path
 import re
 
 import psycopg
 from psycopg import sql
 
 from pgadmin_schemadiff.config import DatabaseConfig
-from pgadmin_schemadiff.ddl_loader import DDLScript
+from pgadmin_schemadiff.ddl_loader import DDLScript, StreamedDDL
 from pgadmin_schemadiff.exceptions import DatabaseError
+from pgadmin_schemadiff.psql_runner import run_psql_files
 
 _OPRNAME_RE = re.compile(r"^[+\-*/<>=~!@#%^&|`?]+$")
 
@@ -320,7 +323,7 @@ def _build_set_search_path(db_config: DatabaseConfig) -> sql.Composed:
 def apply_ddl_scripts(
     conn: psycopg.Connection,
     db_config: DatabaseConfig,
-    scripts: list[DDLScript],
+    scripts: Iterable[DDLScript],
 ) -> None:
     """Execute DDL scripts in order after setting the configured ``search_path``."""
     set_search_path_stmt = _build_set_search_path(db_config)
@@ -377,9 +380,27 @@ def apply_diff_script(
 
 def prepare_database(
     db_config: DatabaseConfig,
-    scripts: list[DDLScript],
+    scripts: Iterable[DDLScript],
 ) -> None:
     """Reset the target schema in PostgreSQL and apply the given DDL scripts."""
     with connect_db(db_config) as conn:
         ensure_and_reset_schema(conn, db_config)
         apply_ddl_scripts(conn, db_config, scripts)
+
+
+def prepare_database_files(
+    db_config: DatabaseConfig,
+    scripts: list[StreamedDDL],
+    *,
+    psql: Path | None,
+) -> None:
+    """Reset the target schema, then restore all SQL files in one transaction."""
+    if scripts and psql is None:
+        raise DatabaseError("psql is required to restore SQL files.")
+
+    with connect_db(db_config) as conn:
+        ensure_and_reset_schema(conn, db_config)
+        set_search_path = _build_set_search_path(db_config).as_string(conn)
+
+    if psql is not None:
+        run_psql_files(psql, db_config, set_search_path, scripts)

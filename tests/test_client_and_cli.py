@@ -27,6 +27,11 @@ from pgadmin_schemadiff import (
 )
 
 
+@pytest.fixture(autouse=True)
+def mock_psql_resolution(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("pgadmin_schemadiff.client.resolve_psql", lambda *_args: Path("psql"))
+
+
 def _write_sample_config(tmp_path: Path) -> Path:
     cfg_path = tmp_path / "config.toml"
     cfg_path.write_text(
@@ -71,8 +76,8 @@ def test_client_diff_ddls_and_run_schema_diff(
 
     prepared: list[tuple[str, list[str]]] = []
     monkeypatch.setattr(
-        "pgadmin_schemadiff.client.prepare_database",
-        lambda db_cfg, scripts: prepared.append((db_cfg.database, [s.name for s in scripts])),
+        "pgadmin_schemadiff.client.prepare_database_files",
+        lambda db_cfg, scripts, *, psql: prepared.append((db_cfg.database, [s.name for s in scripts])),
     )
     monkeypatch.setattr(
         "pgadmin_schemadiff.client.run_pgadmin_diff",
@@ -115,7 +120,7 @@ def test_cli_sql_json_and_error_exit_codes(
     old_sql.write_text("CREATE TABLE a (id int);", encoding="utf-8")
     new_sql.write_text("CREATE TABLE b (id int);", encoding="utf-8")
 
-    monkeypatch.setattr("pgadmin_schemadiff.client.prepare_database", lambda _db, _sc: None)
+    monkeypatch.setattr("pgadmin_schemadiff.client.prepare_database_files", lambda _db, _sc, *, psql: None)
     monkeypatch.setattr(
         "pgadmin_schemadiff.client.run_pgadmin_diff",
         lambda _cfg, include_identical_ddl=False: [
@@ -215,7 +220,7 @@ def test_client_apply_and_full_dump_options(
     old_sql.write_text("CREATE TABLE a (id int);", encoding="utf-8")
     new_sql.write_text("CREATE TABLE b (id int);", encoding="utf-8")
 
-    monkeypatch.setattr("pgadmin_schemadiff.client.prepare_database", lambda _db, _sc: None)
+    monkeypatch.setattr("pgadmin_schemadiff.client.prepare_database_files", lambda _db, _sc, *, psql: None)
     monkeypatch.setattr(
         "pgadmin_schemadiff.client.run_pgadmin_diff",
         lambda _cfg, include_identical_ddl=False: [
@@ -288,7 +293,7 @@ def test_cli_apply_and_full_dump_flags(
     old_sql.write_text("CREATE TABLE a (id int);", encoding="utf-8")
     new_sql.write_text("CREATE TABLE b (id int);", encoding="utf-8")
 
-    monkeypatch.setattr("pgadmin_schemadiff.client.prepare_database", lambda _db, _sc: None)
+    monkeypatch.setattr("pgadmin_schemadiff.client.prepare_database_files", lambda _db, _sc, *, psql: None)
     monkeypatch.setattr(
         "pgadmin_schemadiff.client.run_pgadmin_diff",
         lambda _cfg, include_identical_ddl=False: [
@@ -460,7 +465,7 @@ user = "postgres"
     old_sql.write_text("CREATE TABLE a (id int);", encoding="utf-8")
     new_sql.write_text("CREATE TABLE b (id int);", encoding="utf-8")
 
-    monkeypatch.setattr("pgadmin_schemadiff.client.prepare_database", lambda _db, _sc: None)
+    monkeypatch.setattr("pgadmin_schemadiff.client.prepare_database_files", lambda _db, _sc, *, psql: None)
     monkeypatch.setattr(
         "pgadmin_schemadiff.client.run_pgadmin_diff",
         lambda _cfg, include_identical_ddl=False: [
@@ -558,7 +563,7 @@ def test_click_cli_runner_and_abort(
         assert "--full-dump" in help_res.output
         assert "--tweak" in help_res.output
 
-    monkeypatch.setattr("pgadmin_schemadiff.client.prepare_database", lambda _db, _sc: None)
+    monkeypatch.setattr("pgadmin_schemadiff.client.prepare_database_files", lambda _db, _sc, *, psql: None)
     monkeypatch.setattr(
         "pgadmin_schemadiff.client.run_pgadmin_diff",
         lambda _cfg, include_identical_ddl=False: [

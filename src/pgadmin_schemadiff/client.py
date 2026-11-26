@@ -5,14 +5,15 @@ from __future__ import annotations
 from pathlib import Path
 
 from pgadmin_schemadiff.config import Config, load_config
-from pgadmin_schemadiff.db_manager import apply_diff_script, prepare_database
-from pgadmin_schemadiff.ddl_loader import load_ddl_scripts
+from pgadmin_schemadiff.db_manager import apply_diff_script, prepare_database_files
+from pgadmin_schemadiff.ddl_loader import open_ddl_inputs
 from pgadmin_schemadiff.exceptions import DatabaseError
 from pgadmin_schemadiff.pg_dump_runner import (
     DEFAULT_FULL_DUMP_FILENAME,
     run_pg_dump_schema,
 )
 from pgadmin_schemadiff.pgadmin_runner import run_pgadmin_diff
+from pgadmin_schemadiff.psql_runner import resolve_psql
 from pgadmin_schemadiff.script_generator import (
     ApplyResult,
     DiffResult,
@@ -49,11 +50,12 @@ class SchemaDiffClient:
         full_dump: bool | str | Path | None = None,
     ) -> DiffResult:
         """Reset both databases, apply Old/New DDLs, and generate the diff script."""
-        old_scripts = load_ddl_scripts(old_ddl)
-        new_scripts = load_ddl_scripts(new_ddl)
-
-        prepare_database(self.config.old_db, old_scripts)
-        prepare_database(self.config.new_db, new_scripts)
+        with open_ddl_inputs(old_ddl) as old_scripts, open_ddl_inputs(new_ddl) as new_scripts:
+            psql = None
+            if old_scripts or new_scripts:
+                psql = resolve_psql(self.config.pgadmin_path, self.config.pg_dump_path)
+            prepare_database_files(self.config.old_db, old_scripts, psql=psql)
+            prepare_database_files(self.config.new_db, new_scripts, psql=psql)
 
         return self.diff_existing(
             include_identical_ddl=include_identical_ddl,
