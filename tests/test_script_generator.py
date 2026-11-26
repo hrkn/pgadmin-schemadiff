@@ -202,6 +202,34 @@ def test_filter_and_generate_diff_script() -> None:
     assert extended["full_dump_path"] == str(Path("out/full_dump.sql"))
 
 
+def test_generate_diff_script_orders_foreign_keys_reported_by_name() -> None:
+    instance = DiffItem(
+        id=1, node_type="table", label="Tables", title="instance",
+        status=DiffStatus.SOURCE_ONLY, oid=10,
+        diff_ddl="CREATE TABLE app.instance (id int PRIMARY KEY);",
+        dependencies=[{"type": "table", "name": "other.params"}],
+    )
+    execution = DiffItem(
+        id=2, node_type="table", label="Tables", title="Execution",
+        status=DiffStatus.SOURCE_ONLY, oid=20,
+        diff_ddl='CREATE TABLE app."Execution" (id int PRIMARY KEY, instance_id int REFERENCES app.instance);',
+        dependencies=[{"type": "table", "name": "app.instance"}],
+    )
+    params = DiffItem(
+        id=3, node_type="table", label="Tables", title="params",
+        status=DiffStatus.SOURCE_ONLY, oid=30,
+        diff_ddl='CREATE TABLE app.params (execution_id int REFERENCES app."Execution");',
+        dependencies=[{"type": "table", "name": "app.Execution"}],
+    )
+    items = [params, execution, instance]
+
+    script = generate_diff_script(items, OutputFilterOptions(), source_schema="app")
+
+    assert script.index("CREATE TABLE app.instance") < script.index('CREATE TABLE app."Execution"')
+    assert script.index('CREATE TABLE app."Execution"') < script.index("CREATE TABLE app.params")
+    assert [item.depend_level for item in items] == [1, 2, 3]
+
+
 def test_apply_diff_tweaks_and_generate_diff_script_omit_pg_attver() -> None:
     attver_only = DiffItem(
         id=1,

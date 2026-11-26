@@ -145,7 +145,9 @@ class DiffResult:
         return data
 
 
-def compute_depend_levels(items: list[DiffItem]) -> list[DiffItem]:
+def compute_depend_levels(
+    items: list[DiffItem], *, source_schema: str | None = None
+) -> list[DiffItem]:
     """Compute dependency levels using pgAdmin 4's reverse-dependency algorithm.
 
     Any object that another object depends on gets a strictly higher
@@ -156,15 +158,24 @@ def compute_depend_levels(items: list[DiffItem]) -> list[DiffItem]:
     oid_to_item: dict[int, DiffItem] = {
         item.oid: item for item in items if item.oid is not None
     }
+    # pgAdmin reports foreign-key dependencies by qualified table name.
+    source_tables = {
+        f"{source_schema}.{item.title}": item
+        for item in items
+        if source_schema is not None
+        and item.node_type == "table"
+        and item.status != DiffStatus.TARGET_ONLY
+    }
     dependents: dict[int, list[DiffItem]] = {}
 
     for item in items:
         for dep in item.dependencies:
-            dep_oid = dep.get("oid") if isinstance(dep, dict) else None
-            if dep_oid is None:
+            if not isinstance(dep, dict):
                 continue
-            dependency_item = oid_to_item.get(dep_oid)
-            if dependency_item is not None:
+            dependency_item = oid_to_item.get(dep.get("oid"))
+            if dep.get("oid") is None and dep.get("type") == "table":
+                dependency_item = source_tables.get(dep.get("name"))
+            if dependency_item is not None and dependency_item is not item:
                 dependents.setdefault(dependency_item.id, []).append(item)
 
     levels: dict[int, int] = {}
@@ -222,10 +233,11 @@ def generate_diff_script(
     output_filter: OutputFilterOptions,
     *,
     tweak: TweakOptions | None = None,
+    source_schema: str | None = None,
 ) -> str:
     """Assemble the final transaction-wrapped migration SQL script."""
     working_items = apply_diff_tweaks(items, tweak) if tweak is not None else items
-    compute_depend_levels(working_items)
+    compute_depend_levels(working_items, source_schema=source_schema)
     selected = output_filter.selected_statuses()
 
     script_by_level: dict[int, list[str]] = {}

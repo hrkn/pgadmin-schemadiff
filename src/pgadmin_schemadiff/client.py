@@ -78,7 +78,9 @@ class SchemaDiffClient:
         if self.config.tweak.omit_pg_attver:
             all_items = apply_diff_tweaks(all_items, self.config.tweak)
         filtered = filter_items(all_items, self.config.output_filter)
-        script = generate_diff_script(all_items, self.config.output_filter)
+        script = generate_diff_script(
+            all_items, self.config.output_filter, source_schema=self.config.new_db.primary_schema
+        )
 
         full_dump_path: Path | None = None
         if full_dump is not None and full_dump is not False:
