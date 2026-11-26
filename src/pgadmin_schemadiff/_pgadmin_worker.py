@@ -196,6 +196,10 @@ def run_worker_request(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
             with app.app_context(), app.test_request_context():
                 try:
+                    # pgAdmin registers browser preferences in its startup hooks.
+                    app.PGADMIN_RUNTIME = False
+                    app.run_before_app_start()
+
                     user = User.query.filter_by(email=config.DESKTOP_USER).first()
                     if user is None:
                         raise RuntimeError(

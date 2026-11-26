@@ -118,7 +118,12 @@ def _install_fake_pgadmin_modules(
     user_exists: bool = True,
     has_server_group: bool = True,
 ) -> dict[str, object]:
-    state: dict[str, object] = {"released": 0, "disposed": False, "logged_in": None}
+    state: dict[str, object] = {
+        "released": 0,
+        "disposed": False,
+        "logged_in": None,
+        "startup_complete": False,
+    }
 
     class FakeSession:
         def __init__(self) -> None:
@@ -174,6 +179,12 @@ def _install_fake_pgadmin_modules(
             self.__dict__.update(kwargs)
 
     class FakeApp:
+        PGADMIN_RUNTIME: bool
+
+        def run_before_app_start(self) -> None:
+            assert self.PGADMIN_RUNTIME is False
+            state["startup_complete"] = True
+
         def app_context(self) -> contextlib.AbstractContextManager[None]:
             return contextlib.nullcontext()
 
@@ -263,10 +274,15 @@ def _install_fake_pgadmin_modules(
     model_mod.Server = FakeServer  # type: ignore[attr-defined]
 
     tools_pkg = types.ModuleType("pgadmin.tools")
+
+    def get_schemas(sid: int, _did: int) -> list[dict[str, object]]:
+        assert state["startup_complete"] is True
+        return [{"_id": 2200 + sid, "label": "app"}]
+
     sd_mod = types.ModuleType("pgadmin.tools.schema_diff")
     sd_mod.SCH_OBJ_STR = "Schema Objects"  # type: ignore[attr-defined]
     sd_mod.check_version_compatibility = lambda _s, _t: compat_result  # type: ignore[attr-defined]
-    sd_mod.get_schemas = lambda sid, _did: [{"_id": 2200 + sid, "label": "app"}]  # type: ignore[attr-defined]
+    sd_mod.get_schemas = get_schemas  # type: ignore[attr-defined]
 
     reg_mod = types.ModuleType("pgadmin.tools.schema_diff.node_registry")
     reg_mod.SchemaDiffRegistry = FakeRegistry  # type: ignore[attr-defined]
