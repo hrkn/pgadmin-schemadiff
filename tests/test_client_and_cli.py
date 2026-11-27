@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import threading
 
 import click
 from click.testing import CliRunner
@@ -103,7 +104,7 @@ def test_client_diff_ddls_and_run_schema_diff(
     )
 
     result = run_schema_diff(cfg_path, old_sql, new_sql)
-    assert prepared == [("db_old", ["old.sql"]), ("db_new", ["new.sql"])]
+    assert sorted(prepared) == [("db_new", ["new.sql"]), ("db_old", ["old.sql"])]
     assert [i.title for i in result.items] == ["b"]
     assert len(result.all_items) == 2
     assert "CREATE TABLE b (id int);" in result.script
@@ -328,7 +329,7 @@ def test_cli_apply_and_full_dump_flags(
     captured = capsys.readouterr()
     assert "CREATE TABLE b (id int);" in captured.out
     assert "Error:" not in captured.err
-    for step_prefix in ("[1/6]", "[2/6]", "[3/6]", "[4/6]", "[5/6]", "[6/6]", "Done."):
+    for step_prefix in ("[1/5]", "[2/5]", "[3/5]", "[4/5]", "[5/5]", "Done."):
         assert step_prefix in captured.err
     assert len(applied_scripts) == 1
 
@@ -697,38 +698,46 @@ def test_progress_reporting_client_and_cli(
         lambda _cfg, out_path: Path(out_path),
     )
 
-    # 1. run_schema_diff standard (5 steps)
+    # 1. run_schema_diff standard (4 steps, with Old/New prepared in parallel during step 2)
     events_std: list[str] = []
     run_schema_diff(cfg_path, old_sql, new_sql, progress=events_std.append)
-    assert [line.split(" ", 1)[0] for line in events_std] == [
-        "[1/5]",
-        "[2/5]",
-        "[3/5]",
-        "[4/5]",
-        "[5/5]",
+    step_lines = [line for line in events_std if line.startswith("[")]
+    assert [line.split(" ", 1)[0] for line in step_lines] == [
+        "[1/4]",
+        "[2/4]",
+        "[3/4]",
+        "[4/4]",
     ]
-    assert "Loading DDL inputs" in events_std[0]
-    assert "Preparing Target (Old) database 'db_old'" in events_std[1]
-    assert "Preparing Source (New) database 'db_new'" in events_std[2]
-    assert "Running pgAdmin 4 Schema Diff" in events_std[3]
-    assert "Generating diff script" in events_std[4]
+    assert "Loading DDL inputs" in step_lines[0]
+    assert "Preparing Target (Old) database 'db_old'" in step_lines[1]
+    assert "Source (New) database 'db_new'" in step_lines[1]
+    assert "in parallel" in step_lines[1]
+    assert "Running pgAdmin 4 Schema Diff" in step_lines[2]
+    assert "Generating diff script" in step_lines[3]
 
-    # 2. run_schema_diff with full_dump + apply (7 steps)
+    idx_step2 = events_std.index(step_lines[1])
+    idx_step3 = events_std.index(step_lines[2])
+    assert set(events_std[idx_step2 + 1 : idx_step3]) == {
+        "  - Target (Old) database 'db_old' (schema 'public') prepared.",
+        "  - Source (New) database 'db_new' (schema 'public') prepared.",
+    }
+
+    # 2. run_schema_diff with full_dump + apply (6 steps)
     events_full: list[str] = []
     run_schema_diff(
         cfg_path, old_sql, new_sql, apply=True, full_dump=True, progress=events_full.append
     )
-    assert [line.split(" ", 1)[0] for line in events_full] == [
-        "[1/7]",
-        "[2/7]",
-        "[3/7]",
-        "[4/7]",
-        "[5/7]",
-        "[6/7]",
-        "[7/7]",
+    step_lines_full = [line for line in events_full if line.startswith("[")]
+    assert [line.split(" ", 1)[0] for line in step_lines_full] == [
+        "[1/6]",
+        "[2/6]",
+        "[3/6]",
+        "[4/6]",
+        "[5/6]",
+        "[6/6]",
     ]
-    assert "Creating schema-only full dump" in events_full[5]
-    assert "Applying diff script to Target (Old) database 'db_old'" in events_full[6]
+    assert "Creating schema-only full dump" in step_lines_full[4]
+    assert "Applying diff script to Target (Old) database 'db_old'" in step_lines_full[5]
 
     # 3. diff_existing directly (2 steps and 4 steps)
     cfg = Config(
@@ -760,16 +769,17 @@ def test_progress_reporting_client_and_cli(
     assert res_json.exit_code == 0
     parsed = json.loads(res_json.stdout)
     assert parsed["summary"]["source_only"] == 1
-    assert "[1/5]" not in res_json.stdout
+    assert "[1/4]" not in res_json.stdout
     err_lines = res_json.stderr.strip().splitlines()
-    assert [line.split(" ", 1)[0] for line in err_lines] == [
-        "[1/5]",
-        "[2/5]",
-        "[3/5]",
-        "[4/5]",
-        "[5/5]",
+    assert [line.split(" ", 1)[0] for line in err_lines if line.startswith("[") or line == "Done."] == [
+        "[1/4]",
+        "[2/4]",
+        "[3/4]",
+        "[4/4]",
         "Done.",
     ]
+    assert "  - Target (Old) database 'db_old' (schema 'public') prepared." in err_lines
+    assert "  - Source (New) database 'db_new' (schema 'public') prepared." in err_lines
 
     res_both = runner.invoke(
         cli.cli,
@@ -785,16 +795,19 @@ def test_progress_reporting_client_and_cli(
         ],
     )
     assert res_both.exit_code == 0
-    assert "[1/7]" not in res_both.stdout
+    assert "[1/6]" not in res_both.stdout
     assert "CREATE TABLE b (id int);" in res_both.stdout
-    assert [line.split(" ", 1)[0] for line in res_both.stderr.strip().splitlines()] == [
-        "[1/7]",
-        "[2/7]",
-        "[3/7]",
-        "[4/7]",
-        "[5/7]",
-        "[6/7]",
-        "[7/7]",
+    assert [
+        line.split(" ", 1)[0]
+        for line in res_both.stderr.strip().splitlines()
+        if line.startswith("[") or line == "Done."
+    ] == [
+        "[1/6]",
+        "[2/6]",
+        "[3/6]",
+        "[4/6]",
+        "[5/6]",
+        "[6/6]",
         "Done.",
     ]
 
@@ -809,7 +822,7 @@ def test_progress_reporting_client_and_cli(
     )
     assert res_fail.exit_code == 1
     assert "CREATE TABLE b (id int);" in res_fail.stdout
-    assert "[6/6]" in res_fail.stderr
+    assert "[5/5]" in res_fail.stderr
     assert "Error: apply failed" in res_fail.stderr
     assert "Done." not in res_fail.stderr
 
@@ -822,3 +835,47 @@ def test_progress_reporting_client_and_cli(
     cfg_err = capsys.readouterr().err
     assert "Configuration error:" in cfg_err
     assert "[1/" not in cfg_err
+
+
+def test_diff_ddls_prepares_old_and_new_in_parallel(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg_path = _write_sample_config(tmp_path)
+    old_sql = tmp_path / "old.sql"
+    new_sql = tmp_path / "new.sql"
+    old_sql.write_text("CREATE TABLE a (id int);", encoding="utf-8")
+    new_sql.write_text("CREATE TABLE b (id int);", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "pgadmin_schemadiff.client.run_pgadmin_diff",
+        lambda _cfg, include_identical_ddl=False: [],
+    )
+
+    barrier = threading.Barrier(2, timeout=5)
+    seen_threads: dict[str, int] = {}
+
+    def concurrent_prepare(db_cfg: DatabaseConfig, _scripts: object, *, psql: object) -> None:
+        seen_threads[db_cfg.database] = threading.get_ident()
+        barrier.wait()
+
+    monkeypatch.setattr("pgadmin_schemadiff.client.prepare_database_files", concurrent_prepare)
+    run_schema_diff(cfg_path, old_sql, new_sql)
+    assert set(seen_threads.keys()) == {"db_old", "db_new"}
+    assert seen_threads["db_old"] != seen_threads["db_new"]
+
+    def fail_old(db_cfg: DatabaseConfig, _scripts: object, *, psql: object) -> None:
+        if db_cfg.database == "db_old":
+            raise DatabaseError("old db boom")
+
+    monkeypatch.setattr("pgadmin_schemadiff.client.prepare_database_files", fail_old)
+    with pytest.raises(DatabaseError, match="old db boom"):
+        run_schema_diff(cfg_path, old_sql, new_sql)
+
+    def fail_new(db_cfg: DatabaseConfig, _scripts: object, *, psql: object) -> None:
+        if db_cfg.database == "db_new":
+            raise DatabaseError("new db boom")
+
+    monkeypatch.setattr("pgadmin_schemadiff.client.prepare_database_files", fail_new)
+    with pytest.raises(DatabaseError, match="new db boom"):
+        run_schema_diff(cfg_path, old_sql, new_sql)

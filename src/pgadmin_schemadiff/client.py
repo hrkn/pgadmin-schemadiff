@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+import threading
 
-from pgadmin_schemadiff.config import Config, load_config
+from pgadmin_schemadiff.config import Config, DatabaseConfig, load_config
 from pgadmin_schemadiff.db_manager import apply_diff_script, prepare_database_files
-from pgadmin_schemadiff.ddl_loader import open_ddl_inputs
+from pgadmin_schemadiff.ddl_loader import StreamedDDL, open_ddl_inputs
 from pgadmin_schemadiff.exceptions import DatabaseError
 from pgadmin_schemadiff.pg_dump_runner import (
     DEFAULT_FULL_DUMP_FILENAME,
@@ -37,10 +39,12 @@ class SchemaDiffClient:
     ) -> None:
         self.config = config
         self._progress = progress
+        self._progress_lock = threading.Lock()
 
     def _report(self, message: str) -> None:
         if self._progress is not None:
-            self._progress(message)
+            with self._progress_lock:
+                self._progress(message)
 
     def _report_step(self, step: int, total: int, message: str) -> None:
         self._report(f"[{step}/{total}] {message}")
@@ -65,9 +69,9 @@ class SchemaDiffClient:
         apply: bool = False,
         full_dump: bool | str | Path | None = None,
     ) -> DiffResult:
-        """Reset both databases, apply Old/New DDLs, and generate the diff script."""
+        """Reset both databases, apply Old/New DDLs in parallel, and generate the diff script."""
         has_full_dump = full_dump is not None and full_dump is not False
-        total_steps = 5 + int(has_full_dump) + int(apply)
+        total_steps = 4 + int(has_full_dump) + int(apply)
 
         self._report_step(
             1,
@@ -83,20 +87,37 @@ class SchemaDiffClient:
                 2,
                 total_steps,
                 f"Preparing Target (Old) database '{self.config.old_db.database}' "
-                f"(schema '{self.config.old_db.primary_schema}', {len(old_scripts)} file(s))...",
+                f"(schema '{self.config.old_db.primary_schema}', {len(old_scripts)} file(s)) "
+                f"and Source (New) database '{self.config.new_db.database}' "
+                f"(schema '{self.config.new_db.primary_schema}', {len(new_scripts)} file(s)) "
+                "in parallel...",
             )
-            prepare_database_files(self.config.old_db, old_scripts, psql=psql)
 
-            self._report_step(
-                3,
-                total_steps,
-                f"Preparing Source (New) database '{self.config.new_db.database}' "
-                f"(schema '{self.config.new_db.primary_schema}', {len(new_scripts)} file(s))...",
-            )
-            prepare_database_files(self.config.new_db, new_scripts, psql=psql)
+            def _prepare_one(
+                label: str,
+                db_cfg: DatabaseConfig,
+                scripts: list[StreamedDDL],
+            ) -> None:
+                prepare_database_files(db_cfg, scripts, psql=psql)
+                self._report(
+                    f"  - {label} database '{db_cfg.database}' "
+                    f"(schema '{db_cfg.primary_schema}') prepared."
+                )
+
+            with ThreadPoolExecutor(
+                max_workers=2, thread_name_prefix="pgadmin-sd-load"
+            ) as executor:
+                old_future = executor.submit(
+                    _prepare_one, "Target (Old)", self.config.old_db, old_scripts
+                )
+                new_future = executor.submit(
+                    _prepare_one, "Source (New)", self.config.new_db, new_scripts
+                )
+                old_future.result()
+                new_future.result()
 
         return self._run_diff_steps(
-            step_offset=3,
+            step_offset=2,
             total_steps=total_steps,
             include_identical_ddl=include_identical_ddl,
             apply=apply,
