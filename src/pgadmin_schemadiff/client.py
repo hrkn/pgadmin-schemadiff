@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 from pgadmin_schemadiff.config import Config, load_config
@@ -22,12 +23,27 @@ from pgadmin_schemadiff.script_generator import (
     generate_diff_script,
 )
 
+ProgressCallback = Callable[[str], None]
+
 
 class SchemaDiffClient:
     """Orchestrates DDL loading, database preparation, and pgAdmin 4 Schema Diff."""
 
-    def __init__(self, config: Config) -> None:
+    def __init__(
+        self,
+        config: Config,
+        *,
+        progress: ProgressCallback | None = None,
+    ) -> None:
         self.config = config
+        self._progress = progress
+
+    def _report(self, message: str) -> None:
+        if self._progress is not None:
+            self._progress(message)
+
+    def _report_step(self, step: int, total: int, message: str) -> None:
+        self._report(f"[{step}/{total}] {message}")
 
     def apply_diff(self, script: str) -> None:
         """Apply the generated migration SQL script to the Target (Old) database."""
@@ -50,14 +66,38 @@ class SchemaDiffClient:
         full_dump: bool | str | Path | None = None,
     ) -> DiffResult:
         """Reset both databases, apply Old/New DDLs, and generate the diff script."""
+        has_full_dump = full_dump is not None and full_dump is not False
+        total_steps = 5 + int(has_full_dump) + int(apply)
+
+        self._report_step(
+            1,
+            total_steps,
+            f"Loading DDL inputs (old: {old_ddl}, new: {new_ddl})...",
+        )
         with open_ddl_inputs(old_ddl) as old_scripts, open_ddl_inputs(new_ddl) as new_scripts:
             psql = None
             if old_scripts or new_scripts:
                 psql = resolve_psql(self.config.pgadmin_path, self.config.pg_dump_path)
+
+            self._report_step(
+                2,
+                total_steps,
+                f"Preparing Target (Old) database '{self.config.old_db.database}' "
+                f"(schema '{self.config.old_db.primary_schema}', {len(old_scripts)} file(s))...",
+            )
             prepare_database_files(self.config.old_db, old_scripts, psql=psql)
+
+            self._report_step(
+                3,
+                total_steps,
+                f"Preparing Source (New) database '{self.config.new_db.database}' "
+                f"(schema '{self.config.new_db.primary_schema}', {len(new_scripts)} file(s))...",
+            )
             prepare_database_files(self.config.new_db, new_scripts, psql=psql)
 
-        return self.diff_existing(
+        return self._run_diff_steps(
+            step_offset=3,
+            total_steps=total_steps,
             include_identical_ddl=include_identical_ddl,
             apply=apply,
             full_dump=full_dump,
@@ -71,9 +111,39 @@ class SchemaDiffClient:
         full_dump: bool | str | Path | None = None,
     ) -> DiffResult:
         """Compare the already-populated Old and New schemas using pgAdmin 4."""
+        has_full_dump = full_dump is not None and full_dump is not False
+        total_steps = 2 + int(has_full_dump) + int(apply)
+        return self._run_diff_steps(
+            step_offset=0,
+            total_steps=total_steps,
+            include_identical_ddl=include_identical_ddl,
+            apply=apply,
+            full_dump=full_dump,
+        )
+
+    def _run_diff_steps(
+        self,
+        *,
+        step_offset: int,
+        total_steps: int,
+        include_identical_ddl: bool,
+        apply: bool,
+        full_dump: bool | str | Path | None,
+    ) -> DiffResult:
+        has_full_dump = full_dump is not None and full_dump is not False
+        step = step_offset + 1
+
+        self._report_step(step, total_steps, "Running pgAdmin 4 Schema Diff...")
         all_items = run_pgadmin_diff(
             self.config,
             include_identical_ddl=include_identical_ddl,
+        )
+
+        step += 1
+        self._report_step(
+            step,
+            total_steps,
+            f"Generating diff script ({len(all_items)} object(s) compared)...",
         )
         if self.config.tweak.omit_pg_attver:
             all_items = apply_diff_tweaks(all_items, self.config.tweak)
@@ -83,14 +153,28 @@ class SchemaDiffClient:
         )
 
         full_dump_path: Path | None = None
-        if full_dump is not None and full_dump is not False:
+        if has_full_dump:
+            step += 1
             dump_target: str | Path = (
                 DEFAULT_FULL_DUMP_FILENAME if full_dump is True else full_dump
+            )
+            self._report_step(
+                step,
+                total_steps,
+                f"Creating schema-only full dump '{dump_target}' from Source (New) database "
+                f"'{self.config.new_db.database}' (schema '{self.config.new_db.primary_schema}')...",
             )
             full_dump_path = self.dump_source_schema(dump_target)
 
         apply_result: ApplyResult | None = None
         if apply:
+            step += 1
+            self._report_step(
+                step,
+                total_steps,
+                f"Applying diff script to Target (Old) database '{self.config.old_db.database}' "
+                f"(schema '{self.config.old_db.primary_schema}')...",
+            )
             try:
                 self.apply_diff(script)
             except DatabaseError as exc:
@@ -115,10 +199,11 @@ def run_schema_diff(
     include_identical_ddl: bool = False,
     apply: bool = False,
     full_dump: bool | str | Path | None = None,
+    progress: ProgressCallback | None = None,
 ) -> DiffResult:
     """Convenience function to run Schema Diff from a :class:`Config` or TOML path."""
     resolved_config = config if isinstance(config, Config) else load_config(config)
-    return SchemaDiffClient(resolved_config).diff_ddls(
+    return SchemaDiffClient(resolved_config, progress=progress).diff_ddls(
         old_ddl,
         new_ddl,
         include_identical_ddl=include_identical_ddl,

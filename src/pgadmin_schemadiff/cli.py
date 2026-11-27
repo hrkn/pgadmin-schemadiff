@@ -98,11 +98,14 @@ def cli(
     tweaks: tuple[str, ...],
 ) -> None:
     """Execute schema diff and emit SQL or JSON output."""
+    def emit_progress(message: str) -> None:
+        click.echo(message, err=True)
+
     try:
         config = load_config(config_path)
         if tweaks:
             config = replace(config, tweak=apply_tweak_overrides(config.tweak, tweaks))
-        result = SchemaDiffClient(config).diff_ddls(
+        result = SchemaDiffClient(config, progress=emit_progress).diff_ddls(
             old_ddl,
             new_ddl,
             apply=apply_changes,
@@ -123,6 +126,7 @@ def cli(
     if result.apply_result is not None and not result.apply_result.succeeded:
         click.echo(f"Error: {result.apply_result.error}", err=True)
         ctx.exit(1)
+    emit_progress("Done.")
     ctx.exit(0)
 
 

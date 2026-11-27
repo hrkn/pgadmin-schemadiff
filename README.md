@@ -136,7 +136,7 @@ uv run pgadmin-schemadiff -c config.toml --old ./old --new ./new --tweak omit_pg
 - `--full-dump [FILE]`: スキーマ差分抽出後、`pg_dump --schema-only` を用いて Source（`[databases.new]`）の比較対象主スキーマのみのダンプファイルを作成します。`[ignore]` 設定（`owner` → `--no-owner`、`tablespace` → `--no-tablespaces`、`grants` → `--no-privileges`）がダンプ出力にも反映されます。`FILE` を省略した場合は `full_dump.sql` に出力します。
 - `--tweak TWEAK`: `pglast` を用いた SQL 後処理を有効化または上書きします（複数回指定・カンマ区切り可）。指定可能な値は `omit_pg_attver`・`comment_meta_restrict` で、`<name>=false` や `no_<name>` で設定ファイルの指定を無効化できます。
 
-`python -m pgadmin_schemadiff` としても実行できます。
+`python -m pgadmin_schemadiff` としても実行できます。実行中の進捗ステップ（`[1/N] ...` や `Done.`）は標準エラー出力（`stderr`）に出力されるため、標準出力（`stdout`）の SQL / JSON 出力には混ざりません。
 
 終了コード:
 - `0`: 正常終了
@@ -160,9 +160,9 @@ print(result.script)
 for item in result.items:
     print(item.node_type, item.title, item.status)
 
-# 2. Config オブジェクトとクライアントを明示的に使う場合
+# 2. Config オブジェクトとクライアントを明示的に使う場合（progress コールバック指定可）
 config = load_config("config.toml")
-client = SchemaDiffClient(config)
+client = SchemaDiffClient(config, progress=print)
 result = client.diff_ddls("old.sql", "new.sql", include_identical_ddl=True)
 ```
 

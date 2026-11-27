@@ -327,7 +327,9 @@ def test_cli_apply_and_full_dump_flags(
     assert rc_apply_ok == 0
     captured = capsys.readouterr()
     assert "CREATE TABLE b (id int);" in captured.out
-    assert captured.err == ""
+    assert "Error:" not in captured.err
+    for step_prefix in ("[1/6]", "[2/6]", "[3/6]", "[4/6]", "[5/6]", "[6/6]", "Done."):
+        assert step_prefix in captured.err
     assert len(applied_scripts) == 1
 
     rc_dump_default = cli.main(
@@ -658,3 +660,165 @@ def test_click_cli_runner_and_abort(
     monkeypatch.setattr(cli.cli, "main", raise_abort)
     assert cli.main([]) == 1
     assert "Aborted!" in capsys.readouterr().err
+
+
+def test_progress_reporting_client_and_cli(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cfg_path = _write_sample_config(tmp_path)
+    old_sql = tmp_path / "old.sql"
+    new_sql = tmp_path / "new.sql"
+    old_sql.write_text("CREATE TABLE a (id int);", encoding="utf-8")
+    new_sql.write_text("CREATE TABLE b (id int);", encoding="utf-8")
+
+    monkeypatch.setattr("pgadmin_schemadiff.client.prepare_database_files", lambda _db, _sc, *, psql: None)
+    monkeypatch.setattr(
+        "pgadmin_schemadiff.client.run_pgadmin_diff",
+        lambda _cfg, include_identical_ddl=False: [
+            DiffItem(
+                id=1,
+                node_type="table",
+                label="Tables",
+                title="b",
+                status=DiffStatus.SOURCE_ONLY,
+                oid=10,
+                diff_ddl="CREATE TABLE b (id int);",
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        "pgadmin_schemadiff.client.apply_diff_script",
+        lambda _db, _script: None,
+    )
+    monkeypatch.setattr(
+        "pgadmin_schemadiff.client.run_pg_dump_schema",
+        lambda _cfg, out_path: Path(out_path),
+    )
+
+    # 1. run_schema_diff standard (5 steps)
+    events_std: list[str] = []
+    run_schema_diff(cfg_path, old_sql, new_sql, progress=events_std.append)
+    assert [line.split(" ", 1)[0] for line in events_std] == [
+        "[1/5]",
+        "[2/5]",
+        "[3/5]",
+        "[4/5]",
+        "[5/5]",
+    ]
+    assert "Loading DDL inputs" in events_std[0]
+    assert "Preparing Target (Old) database 'db_old'" in events_std[1]
+    assert "Preparing Source (New) database 'db_new'" in events_std[2]
+    assert "Running pgAdmin 4 Schema Diff" in events_std[3]
+    assert "Generating diff script" in events_std[4]
+
+    # 2. run_schema_diff with full_dump + apply (7 steps)
+    events_full: list[str] = []
+    run_schema_diff(
+        cfg_path, old_sql, new_sql, apply=True, full_dump=True, progress=events_full.append
+    )
+    assert [line.split(" ", 1)[0] for line in events_full] == [
+        "[1/7]",
+        "[2/7]",
+        "[3/7]",
+        "[4/7]",
+        "[5/7]",
+        "[6/7]",
+        "[7/7]",
+    ]
+    assert "Creating schema-only full dump" in events_full[5]
+    assert "Applying diff script to Target (Old) database 'db_old'" in events_full[6]
+
+    # 3. diff_existing directly (2 steps and 4 steps)
+    cfg = Config(
+        pgadmin_path=Path("/pgadmin"),
+        old_db=DatabaseConfig(host="h1", database="old_d", user="u", search_path="s_old"),
+        new_db=DatabaseConfig(host="h2", database="new_d", user="u", search_path="s_new"),
+    )
+    events_existing: list[str] = []
+    SchemaDiffClient(cfg, progress=events_existing.append).diff_existing()
+    assert [line.split(" ", 1)[0] for line in events_existing] == ["[1/2]", "[2/2]"]
+
+    events_existing_all: list[str] = []
+    SchemaDiffClient(cfg, progress=events_existing_all.append).diff_existing(
+        apply=True, full_dump="out.sql"
+    )
+    assert [line.split(" ", 1)[0] for line in events_existing_all] == [
+        "[1/4]",
+        "[2/4]",
+        "[3/4]",
+        "[4/4]",
+    ]
+
+    # 4. CLI stdout vs stderr separation via CliRunner
+    runner = CliRunner()
+    res_json = runner.invoke(
+        cli.cli,
+        ["-c", str(cfg_path), "--old", str(old_sql), "--new", str(new_sql), "--format", "json"],
+    )
+    assert res_json.exit_code == 0
+    parsed = json.loads(res_json.stdout)
+    assert parsed["summary"]["source_only"] == 1
+    assert "[1/5]" not in res_json.stdout
+    err_lines = res_json.stderr.strip().splitlines()
+    assert [line.split(" ", 1)[0] for line in err_lines] == [
+        "[1/5]",
+        "[2/5]",
+        "[3/5]",
+        "[4/5]",
+        "[5/5]",
+        "Done.",
+    ]
+
+    res_both = runner.invoke(
+        cli.cli,
+        [
+            "-c",
+            str(cfg_path),
+            "--old",
+            str(old_sql),
+            "--new",
+            str(new_sql),
+            "--full-dump",
+            "--apply",
+        ],
+    )
+    assert res_both.exit_code == 0
+    assert "[1/7]" not in res_both.stdout
+    assert "CREATE TABLE b (id int);" in res_both.stdout
+    assert [line.split(" ", 1)[0] for line in res_both.stderr.strip().splitlines()] == [
+        "[1/7]",
+        "[2/7]",
+        "[3/7]",
+        "[4/7]",
+        "[5/7]",
+        "[6/7]",
+        "[7/7]",
+        "Done.",
+    ]
+
+    # 5. Apply failure prints steps + Error, does NOT print Done., keeps stdout intact
+    monkeypatch.setattr(
+        "pgadmin_schemadiff.client.apply_diff_script",
+        lambda _db, _sc: (_ for _ in ()).throw(DatabaseError("apply failed")),
+    )
+    res_fail = runner.invoke(
+        cli.cli,
+        ["-c", str(cfg_path), "--old", str(old_sql), "--new", str(new_sql), "--apply"],
+    )
+    assert res_fail.exit_code == 1
+    assert "CREATE TABLE b (id int);" in res_fail.stdout
+    assert "[6/6]" in res_fail.stderr
+    assert "Error: apply failed" in res_fail.stderr
+    assert "Done." not in res_fail.stderr
+
+    # 6. ConfigError emits no progress steps
+    capsys.readouterr()
+    rc_cfg = cli.main(
+        ["-c", str(tmp_path / "missing.toml"), "--old", str(old_sql), "--new", str(new_sql)]
+    )
+    assert rc_cfg == 2
+    cfg_err = capsys.readouterr().err
+    assert "Configuration error:" in cfg_err
+    assert "[1/" not in cfg_err

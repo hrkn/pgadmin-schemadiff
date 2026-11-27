@@ -1,6 +1,6 @@
 """Python CLI and library wrapper around pgAdmin 4's Schema Diff engine."""
 
-from pgadmin_schemadiff.client import SchemaDiffClient, run_schema_diff
+from pgadmin_schemadiff.client import ProgressCallback, SchemaDiffClient, run_schema_diff
 from pgadmin_schemadiff.config import (
     Config,
     DatabaseConfig,
@@ -73,6 +73,7 @@ __all__ = [
     "PgAdminLayout",
     "PgAdminRuntimeError",
     "PgDumpError",
+    "ProgressCallback",
     "SCRIPT_HEADER",
     "SchemaDiffClient",
     "SchemaDiffError",
